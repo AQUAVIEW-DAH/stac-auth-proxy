@@ -449,3 +449,27 @@ def test_captured_groups_come_from_path_as_given():
     assert extract_variables("/collections/km\u00b2/items") == {
         "collection_id": "km\u00b2"
     }
+
+
+@pytest.mark.parametrize(
+    "collections_filter_path",
+    [
+        r"^/collections/(?P<collection_id>[^/]+)/aggregations$",
+        [
+            r"^/collections/(?P<collection_id>[^/]+)/aggregate$",
+            r"^/collections/(?P<collection_id>[^/]+)/aggregations$",
+        ],
+    ],
+    ids=["bare string", "sequence"],
+)
+def test_find_match_authenticates_filter_paths(collections_filter_path):
+    """Any path carrying a filter requires auth, whatever default_public says."""
+    match = find_match(
+        "/collections/123/aggregations",
+        "GET",
+        private_endpoints={},
+        public_endpoints={},
+        default_public=True,
+        collections_filter_path=collections_filter_path,
+    )
+    assert match.uses_auth is True

@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional, Sequence, Union
 from urllib.parse import urlparse
 
 from starlette.requests import Request
@@ -78,6 +78,13 @@ def checked_path(scope: dict) -> str:
     return scope.get(CHECKED_PATH, scope["path"])
 
 
+def as_patterns(value: Union[str, Sequence[str], None]) -> Sequence[str]:
+    """Normalize a filter path setting to a list of regex patterns."""
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else list(value)
+
+
 def dict_to_bytes(d: dict) -> bytes:
     """Convert a dictionary to a body."""
     return json.dumps(d, separators=(",", ":")).encode("utf-8")
@@ -109,8 +116,8 @@ def find_match(
     private_endpoints: EndpointMethods,
     public_endpoints: EndpointMethods,
     default_public: bool,
-    items_filter_path: Optional[str] = None,
-    collections_filter_path: Optional[str] = None,
+    items_filter_path: Union[str, Sequence[str], None] = None,
+    collections_filter_path: Union[str, Sequence[str], None] = None,
 ) -> "MatchResult":
     """
     Check if the given path and method match any of the regex patterns and methods in the endpoints.
@@ -131,7 +138,7 @@ def find_match(
 
     # If we have filter paths configured, check those as well (these are always considered to use auth if they match, regardless of default_public)
     for filter_path in [items_filter_path, collections_filter_path]:
-        if filter_path and match_path(filter_path, path):
+        if any(match_path(pattern, path) for pattern in as_patterns(filter_path)):
             # With default_public, private endpoints were already checked above
             required_scopes = (
                 []

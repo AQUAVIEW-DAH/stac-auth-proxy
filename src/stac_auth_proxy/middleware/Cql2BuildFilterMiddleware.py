@@ -3,7 +3,7 @@
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, Sequence, Union
+from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from cql2 import Expr, Validator
 from fastapi import HTTPException
@@ -36,11 +36,9 @@ class Cql2BuildFilterMiddleware:
 
     # Filters
     collections_filter: Optional[Callable] = None
-    collections_filter_path: Union[str, Sequence[str]] = (
-        DEFAULT_COLLECTIONS_FILTER_PATH,
-    )
+    collections_filter_path: str | Sequence[str] = (DEFAULT_COLLECTIONS_FILTER_PATH,)
     items_filter: Optional[Callable] = None
-    items_filter_path: Union[str, Sequence[str]] = (DEFAULT_ITEMS_FILTER_PATH,)
+    items_filter_path: str | Sequence[str] = (DEFAULT_ITEMS_FILTER_PATH,)
 
     _validator: Validator = field(default_factory=Validator, init=False, repr=False)
 

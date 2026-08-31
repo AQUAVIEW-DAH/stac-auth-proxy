@@ -30,9 +30,7 @@ def str2list(x: str | Sequence[str] | None) -> Sequence[str] | None:
 
 
 # Shared by Settings and Cql2BuildFilterMiddleware (library use)
-DEFAULT_ITEMS_FILTER_PATH = (
-    r"^(?:/collections/(?P<collection_id>[^/]+)/(?:items(?:/(?P<item_id>[^/]+))?|bulk_items)|/search)$"
-)
+DEFAULT_ITEMS_FILTER_PATH = r"^(?:/collections/(?P<collection_id>[^/]+)/(?:items(?:/(?P<item_id>[^/]+))?|bulk_items)|/search)$"
 DEFAULT_COLLECTIONS_FILTER_PATH = r"^/collections(?:/(?P<collection_id>[^/]+))?$"
 
 # NoDecode: pydantic-settings JSON-decodes Sequence fields before validators run,

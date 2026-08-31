@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence
 from urllib.parse import urlparse
 
 from starlette.requests import Request
@@ -78,7 +78,7 @@ def checked_path(scope: dict) -> str:
     return scope.get(CHECKED_PATH, scope["path"])
 
 
-def as_patterns(value: Union[str, Sequence[str], None]) -> Sequence[str]:
+def as_patterns(value: str | Sequence[str] | None) -> Sequence[str]:
     """Normalize a filter path setting to a list of regex patterns."""
     if value is None:
         return []
@@ -116,8 +116,8 @@ def find_match(
     private_endpoints: EndpointMethods,
     public_endpoints: EndpointMethods,
     default_public: bool,
-    items_filter_path: Union[str, Sequence[str], None] = None,
-    collections_filter_path: Union[str, Sequence[str], None] = None,
+    items_filter_path: str | Sequence[str] | None = None,
+    collections_filter_path: str | Sequence[str] | None = None,
 ) -> "MatchResult":
     """
     Check if the given path and method match any of the regex patterns and methods in the endpoints.

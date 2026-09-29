@@ -3,7 +3,7 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from cql2 import Expr, ValidationError
 from fastapi import HTTPException
@@ -33,12 +33,26 @@ class Cql2BuildFilterMiddleware:
 
     # Filters
     collections_filter: Optional[Callable] = None
-    collections_filter_path: str = r"^/collections(/[^/]+)?$"
+    collections_filter_path: str | Sequence[str] = (
+        r"^/collections(?:/(?P<collection_id>[^/]+))?$",
+    )
     items_filter: Optional[Callable] = None
-    items_filter_path: str = r"^(/collections/([^/]+)/items(/[^/]+)?$|/search$)"
+    items_filter_path: str | Sequence[str] = (
+        r"^(?:/collections/(?P<collection_id>[^/]+)/items(?:/(?P<item_id>[^/]+))?|/search)$",
+    )
 
     def __post_init__(self):
         """Set required conformances based on the filter functions."""
+        for attr in ("collections_filter_path", "items_filter_path"):
+            object.__setattr__(self, attr, requests.as_patterns(getattr(self, attr)))
+            for pattern in getattr(self, attr):
+                if not re.compile(pattern).groupindex:
+                    logger.info(
+                        "Filter path %r declares no named capture groups, "
+                        "falling back to built-in path param extraction.",
+                        pattern,
+                    )
+
         required_conformances = set()
         if self.collections_filter:
             logger.debug("Appending required conformance for collections filter")
@@ -78,13 +92,13 @@ class Cql2BuildFilterMiddleware:
             logger.debug("Skipping CQL2 filter build for OPTIONS request")
             return await self.app(scope, receive, send)
 
-        filter_builder = self._get_filter(request.url.path)
+        filter_builder, path_params = self._get_filter(request.url.path)
         if not filter_builder:
             return await self.app(scope, receive, send)
 
         try:
             filter_expr = await filter_builder(
-                self._context(request, scope, request.method)
+                self._context(request, scope, request.method, path_params)
             )
         except HTTPException as e:
             response = JSONResponse(
@@ -105,21 +119,25 @@ class Cql2BuildFilterMiddleware:
         if request.method.upper() in ("PUT", "PATCH", "DELETE"):
             # Lets transaction validation tell a record the caller may read but not
             # modify (403) from one the caller may not see (404).
-            read_filter = await self._build_read_filter(filter_builder, request, scope)
+            read_filter = await self._build_read_filter(
+                filter_builder, request, scope, path_params
+            )
             if read_filter is not None:
                 setattr(request.state, self.read_state_key, read_filter)
 
         return await self.app(scope, receive, send)
 
     @staticmethod
-    def _context(request: Request, scope: Scope, method: str) -> dict[str, Any]:
+    def _context(
+        request: Request, scope: Scope, method: str, path_params: dict
+    ) -> dict[str, Any]:
         """Build the context passed to a filter builder."""
         return {
             "req": {
                 "path": request.url.path,
                 "method": method,
                 "query_params": dict(request.query_params),
-                "path_params": requests.extract_variables(request.url.path),
+                "path_params": path_params,
                 "headers": dict(request.headers),
             },
             **scope["state"],
@@ -130,11 +148,12 @@ class Cql2BuildFilterMiddleware:
         filter_builder: Callable[..., Awaitable[str | dict[str, Any]]],
         request: Request,
         scope: Scope,
+        path_params: dict,
     ) -> Optional[Expr]:
         """Build the filter the caller would get for reading the same path."""
         try:
             read_filter = Expr(
-                await filter_builder(self._context(request, scope, "GET"))
+                await filter_builder(self._context(request, scope, "GET", path_params))
             )
             read_filter.validate()
         except (HTTPException, ValidationError) as e:
@@ -144,13 +163,22 @@ class Cql2BuildFilterMiddleware:
 
     def _get_filter(
         self, path: str
-    ) -> Optional[Callable[..., Awaitable[str | dict[str, Any]]]]:
-        """Get the CQL2 filter builder for the given path."""
+    ) -> tuple[Optional[Callable[..., Awaitable[str | dict[str, Any]]]], dict]:
+        """Get the CQL2 filter builder for the given path and its path params."""
         endpoint_filters = [
             (self.collections_filter_path, self.collections_filter),
             (self.items_filter_path, self.items_filter),
         ]
-        for expr, builder in endpoint_filters:
-            if re.match(expr, path):
-                return builder
-        return None
+        for patterns, builder in endpoint_filters:
+            for expr in patterns:
+                match = re.match(expr, path)
+                if match:
+                    return builder, self._path_params(match, path)
+        return None, {}
+
+    @staticmethod
+    def _path_params(match: re.Match, path: str) -> dict:
+        """Get the path params declared by a matched pattern's named groups."""
+        if match.re.groupindex:
+            return {k: v for k, v in match.groupdict().items() if v is not None}
+        return requests.extract_variables(path)

@@ -370,3 +370,19 @@ These settings configure the CORS behavior when `PROXY_OPTIONS` is `false` (the 
     - **Note:** Matched case-insensitively
     - **Required:** No, defaults to `^/collections(/[^/]+)?$`
     - **Example:** `^.*?/collections(/[^/]+)?$`
+
+### `SINGLE_RECORD_ENDPOINTS`
+
+: Regex patterns of paths that return a single record. On a path that a filter covers, a single record is checked against the filter after the upstream answers (and hidden with a `404` if it does not match); other paths get the filter added to their query string. Add the single-record routes of extensions that the filter paths cover.
+
+    - **Type:** JSON list of regex strings
+    - **Required:** No, defaults to `["^/collections/([^/]+)/items/([^/]+)$", "^/collections/([^/]+)$"]`
+    - **Example:** `["^/collections/([^/]+)/items/([^/]+)$", "^/collections/([^/]+)$", "^/catalogs/([^/]+)$"]`
+
+### `SEARCH_BODY_ENDPOINTS`
+
+: Regex patterns of search paths whose `POST` body receives the filter.
+
+    - **Type:** JSON list of regex strings
+    - **Required:** No, defaults to `["^/search$"]`
+    - **Example:** `["^/search$", "^/catalogs/([^/]+)/search$"]`

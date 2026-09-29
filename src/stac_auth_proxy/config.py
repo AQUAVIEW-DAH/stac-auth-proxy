@@ -59,6 +59,16 @@ def str2patterns(x: str | Sequence[str] | None) -> Sequence[str]:
     return patterns
 
 
+# Endpoints that return a single record: a filter checks the response body instead of
+# being added to the query string.
+DEFAULT_SINGLE_RECORD_ENDPOINTS = [
+    r"^/collections/([^/]+)/items/([^/]+)$",
+    r"^/collections/([^/]+)$",
+]
+# Search endpoints whose POST body receives the filter.
+DEFAULT_SEARCH_BODY_ENDPOINTS = [r"^/search$"]
+
+
 class _ClassInput(BaseModel):
     """Input model for dynamically loading a class or function."""
 
@@ -167,6 +177,8 @@ class Settings(BaseSettings):
     collections_filter_path: FilterPaths = [
         r"^/collections(?:/(?P<collection_id>[^/]+))?$"
     ]
+    single_record_endpoints: Sequence[str] = DEFAULT_SINGLE_RECORD_ENDPOINTS
+    search_body_endpoints: Sequence[str] = DEFAULT_SEARCH_BODY_ENDPOINTS
 
     model_config = SettingsConfigDict(
         env_nested_delimiter="_",

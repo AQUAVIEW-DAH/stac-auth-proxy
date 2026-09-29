@@ -139,13 +139,22 @@ def configure_app(
         )
 
     if settings.items_filter or settings.collections_filter:
-        app.add_middleware(Cql2ValidateResponseBodyMiddleware)
+        app.add_middleware(
+            Cql2ValidateResponseBodyMiddleware,
+            single_record_endpoints=settings.single_record_endpoints,
+        )
         app.add_middleware(
             Cql2ValidateTransactionMiddleware,
             upstream_url=str(settings.upstream_url),
         )
-        app.add_middleware(Cql2ApplyFilterBodyMiddleware)
-        app.add_middleware(Cql2ApplyFilterQueryStringMiddleware)
+        app.add_middleware(
+            Cql2ApplyFilterBodyMiddleware,
+            search_body_endpoints=settings.search_body_endpoints,
+        )
+        app.add_middleware(
+            Cql2ApplyFilterQueryStringMiddleware,
+            single_record_endpoints=settings.single_record_endpoints,
+        )
         app.add_middleware(Cql2RewriteLinksFilterMiddleware)
         app.add_middleware(
             Cql2BuildFilterMiddleware,

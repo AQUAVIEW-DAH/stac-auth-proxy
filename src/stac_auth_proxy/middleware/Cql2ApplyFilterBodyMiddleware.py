@@ -2,14 +2,15 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from logging import getLogger
-from typing import Optional
+from typing import Optional, Sequence
 
 from cql2 import Expr
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ..config import DEFAULT_SEARCH_BODY_ENDPOINTS
 from ..utils import filters
 from ..utils.middleware import required_conformance
 
@@ -28,9 +29,9 @@ class Cql2ApplyFilterBodyMiddleware:
     app: ASGIApp
     state_key: str = "cql2_filter"
 
-    search_body_endpoints = [
-        r"^/search$",
-    ]
+    search_body_endpoints: Sequence[str] = field(
+        default_factory=lambda: list(DEFAULT_SEARCH_BODY_ENDPOINTS)
+    )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Apply the CQL2 filter to the request body."""

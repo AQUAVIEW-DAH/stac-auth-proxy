@@ -1,14 +1,15 @@
 """Middleware to inject CQL2 filters into the query string for GET/list endpoints."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from logging import getLogger
-from typing import Optional
+from typing import Optional, Sequence
 
 from cql2 import Expr
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ..config import DEFAULT_SINGLE_RECORD_ENDPOINTS
 from ..utils import filters
 from ..utils.middleware import required_conformance
 
@@ -27,10 +28,9 @@ class Cql2ApplyFilterQueryStringMiddleware:
     app: ASGIApp
     state_key: str = "cql2_filter"
 
-    single_record_endpoints = [
-        r"^/collections/([^/]+)/items/([^/]+)$",
-        r"^/collections/([^/]+)$",
-    ]
+    single_record_endpoints: Sequence[str] = field(
+        default_factory=lambda: list(DEFAULT_SINGLE_RECORD_ENDPOINTS)
+    )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Apply the CQL2 filter to the query string."""

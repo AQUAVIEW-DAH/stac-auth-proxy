@@ -1,14 +1,15 @@
 """Middleware to validate the response body with a CQL2 filter for single-record endpoints."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from logging import getLogger
-from typing import Optional
+from typing import Optional, Sequence
 
 from cql2 import Expr
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from ..config import DEFAULT_SINGLE_RECORD_ENDPOINTS
 from ..utils.middleware import required_conformance
 from ..utils.requests import match_path
 
@@ -27,10 +28,9 @@ class Cql2ValidateResponseBodyMiddleware:
     app: ASGIApp
     state_key: str = "cql2_filter"
 
-    single_record_endpoints = [
-        r"^/collections/([^/]+)/items/([^/]+)$",
-        r"^/collections/([^/]+)$",
-    ]
+    single_record_endpoints: Sequence[str] = field(
+        default_factory=lambda: list(DEFAULT_SINGLE_RECORD_ENDPOINTS)
+    )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Validate the response body with a CQL2 filter for single-record endpoints."""

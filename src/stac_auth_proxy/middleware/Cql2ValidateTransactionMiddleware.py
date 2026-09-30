@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from logging import getLogger
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 from cql2 import Expr
@@ -47,6 +48,12 @@ class Cql2ValidateTransactionMiddleware:
     # Transaction endpoint patterns
     items_pattern = r"^/collections/([^/]+)/(items|bulk_items)(?:/([^/]+))?$"
     collections_pattern = r"^/collections(?:/([^/]+))?$"
+    # Multi-Tenant Catalogs endpoints, checked when a filter covers them
+    # https://github.com/StacLabs/multi-tenant-catalogs/blob/v1.0.0/README.md#transactions-management
+    catalogs_pattern = r"^/catalogs(?:/([^/]+))?$"
+    catalog_children_pattern = (
+        r"^/catalogs/([^/]+)/(catalogs|collections)(?:/([^/]+))?$"
+    )
 
     def __post_init__(self):
         """Initialize the HTTP client."""
@@ -83,7 +90,10 @@ class Cql2ValidateTransactionMiddleware:
                 )
 
         # Match collections endpoints: /collections, /collections/{id}
-        if re.match(self.collections_pattern, path):
+        # and catalogs endpoints: /catalogs, /catalogs/{id}
+        if re.match(self.collections_pattern, path) or re.match(
+            self.catalogs_pattern, path
+        ):
             if method == "POST":
                 return await self._handle_create(scope, receive, send, cql2_filter)
             if method in ("PUT", "PATCH"):
@@ -93,6 +103,34 @@ class Cql2ValidateTransactionMiddleware:
             if method == "DELETE":
                 return await self._handle_delete(
                     scope, receive, send, cql2_filter, path
+                )
+
+        # Match catalog children endpoints: /catalogs/{id}/catalogs,
+        # /catalogs/{id}/collections, /catalogs/{id}/{catalogs|collections}/{id}
+        match = re.match(self.catalog_children_pattern, path)
+        if match:
+            catalog_id, children, child_id = match.groups()
+            catalog_path = f"/catalogs/{quote(catalog_id, safe='')}"
+            if method == "POST" and child_id is None:
+                return await self._handle_add_child(
+                    scope, receive, send, cql2_filter, catalog_path, children
+                )
+            if (
+                method in ("PUT", "PATCH")
+                and children == "collections"
+                and child_id is not None
+            ):
+                return await self._handle_update(
+                    scope, receive, send, cql2_filter, path, method
+                )
+            if method == "DELETE" and child_id is not None:
+                return await self._handle_remove_child(
+                    scope,
+                    receive,
+                    send,
+                    cql2_filter,
+                    catalog_path,
+                    f"/{children}/{quote(child_id, safe='')}",
                 )
 
         # Not a transaction endpoint, pass through
@@ -349,5 +387,127 @@ class Cql2ValidateTransactionMiddleware:
         if not cql2_filter.matches(existing):
             response = self._denied_existing(scope, existing)
             return await response(scope, receive, send)
+
+        await self.app(scope, receive, send)
+
+    async def _check_existing(
+        self, scope: Scope, cql2_filter: Expr, path: str
+    ) -> Optional[JSONResponse]:
+        """Check that an existing record matches the filter; return the refusal if not."""
+        try:
+            existing = await self._fetch_existing(path)
+        except httpx.HTTPError:
+            return JSONResponse(
+                {
+                    "code": "UpstreamError",
+                    "description": "Failed to fetch record from upstream.",
+                },
+                status_code=502,
+            )
+
+        if existing is None:
+            return JSONResponse(
+                {"code": "NotFoundError", "description": "Record not found."},
+                status_code=404,
+            )
+        if not cql2_filter.matches(existing):
+            return self._denied_existing(scope, existing)
+        return None
+
+    async def _handle_add_child(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        cql2_filter: Expr,
+        catalog_path: str,
+        children: str,
+    ) -> None:
+        """
+        Validate adding a catalog or collection to a catalog.
+
+        The body either creates a new record or links an existing one by its id.
+        The catalog must match the filter. Linking changes the linked record, so an
+        existing record with the body's id must match the filter; otherwise the body
+        must match, as for any create.
+        """
+        body = await self._read_body(receive)
+
+        try:
+            body_json = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            response = JSONResponse(
+                {
+                    "code": "ParseError",
+                    "description": "Request body must be valid JSON.",
+                },
+                status_code=400,
+            )
+            return await response(scope, receive, send)
+
+        child_id = body_json.get("id") if isinstance(body_json, dict) else None
+        if not isinstance(child_id, str) or not child_id or "/" in child_id:
+            response = JSONResponse(
+                {
+                    "code": "ParseError",
+                    "description": "Request body must have a string id without '/'.",
+                },
+                status_code=400,
+            )
+            return await response(scope, receive, send)
+
+        denied = await self._check_existing(scope, cql2_filter, catalog_path)
+        if denied:
+            return await denied(scope, receive, send)
+
+        try:
+            existing = await self._fetch_existing(
+                f"/{children}/{quote(child_id, safe='')}"
+            )
+        except httpx.HTTPError:
+            response = JSONResponse(
+                {
+                    "code": "UpstreamError",
+                    "description": "Failed to fetch record from upstream.",
+                },
+                status_code=502,
+            )
+            return await response(scope, receive, send)
+
+        # A linked record the caller cannot change gets the same answer as a new
+        # record the caller cannot create, so the answer does not tell them apart.
+        if not cql2_filter.matches(existing if existing is not None else body_json):
+            response = JSONResponse(
+                {
+                    "code": "ForbiddenError",
+                    "description": "Resource does not match access filter.",
+                },
+                status_code=403,
+            )
+            return await response(scope, receive, send)
+
+        # Reconstruct receive and forward
+        scope = dict(scope)
+        await self.app(scope, self._make_receive(body), send)
+
+    async def _handle_remove_child(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        cql2_filter: Expr,
+        catalog_path: str,
+        child_path: str,
+    ) -> None:
+        """
+        Validate unlinking a child, which changes both the catalog and the child.
+
+        The child, which the path names, is checked first, so a refusal answers for it.
+        """
+        denied = await self._check_existing(
+            scope, cql2_filter, child_path
+        ) or await self._check_existing(scope, cql2_filter, catalog_path)
+        if denied:
+            return await denied(scope, receive, send)
 
         await self.app(scope, receive, send)

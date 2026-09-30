@@ -60,6 +60,22 @@ The application is configurable via environment variables.
     >
     > **Enable (`true`):** OPTIONS requests are forwarded to the upstream API, which is then responsible for CORS handling.
 
+### `ENABLE_OPTIONS_ALLOW`
+
+: Answer non-preflight OPTIONS requests with an `Allow` header listing the methods the caller may use
+
+    - **Type:** boolean
+    - **Required:** No, defaults to `false`
+    - **Example:** `false`, `1`, `True`
+
+    > [!TIP]
+    > Clients such as editors use `OPTIONS` to learn what a user may do on a resource before offering it ([OGC API - Features - Part 4](https://docs.ogc.org/DRAFTS/20-002r2.html#options), [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-9.3.7)). When enabled, the proxy itself answers an `OPTIONS` request that is not a CORS preflight, with `200` and an `Allow` header. The token is optional; an invalid token gets `401`. A method is listed when it passes the endpoint's authentication and scope checks (`PUBLIC_ENDPOINTS`, `PRIVATE_ENDPOINTS`) and the caller's CQL2 filter for that method:
+    >
+    > - On a single record (`/collections/{collection_id}`, `/collections/{collection_id}/items/{item_id}`), the proxy fetches the record from the upstream API and checks it against the filter for each method. A record the caller may not read gets `404`, as a `GET` would.
+    > - On other paths, such as `/collections/{collection_id}/items`, `POST` is listed when its checks pass. The body of a create is still checked on the `POST` itself.
+    >
+    > Write methods are listed only where `PRIVATE_ENDPOINTS` names them for the path. CORS preflight requests are handled as before, and `Allow` is added to the exposed CORS headers so browser clients can read it. The filter factories are called once per method for each `OPTIONS` request.
+
 ### `HEALTHZ_PREFIX`
 
 : Path prefix for health check endpoints

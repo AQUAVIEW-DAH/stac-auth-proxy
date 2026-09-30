@@ -29,6 +29,7 @@ from .middleware import (
     Cql2ValidateTransactionMiddleware,
     EnforceAuthMiddleware,
     OpenApiMiddleware,
+    OptionsAllowMiddleware,
     ProcessLinksMiddleware,
     RejectAmbiguousPathMiddleware,
     RemoveRootPathMiddleware,
@@ -143,6 +144,15 @@ def configure_app(
             ),
         )
 
+    if settings.enable_options_allow:
+        app.add_middleware(
+            OptionsAllowMiddleware,
+            upstream_url=str(settings.upstream_url),
+            public_endpoints=settings.public_endpoints,
+            private_endpoints=settings.private_endpoints,
+            default_public=settings.default_public,
+        )
+
     if settings.items_filter or settings.collections_filter:
         app.add_middleware(Cql2ValidateResponseBodyMiddleware)
         app.add_middleware(Cql2ValidateTransactionMiddleware)
@@ -157,6 +167,7 @@ def configure_app(
             ),
             collections_filter_path=settings.collections_filter_path,
             items_filter_path=settings.items_filter_path,
+            options_filters=settings.enable_options_allow,
         )
 
     app.add_middleware(
@@ -170,6 +181,7 @@ def configure_app(
         default_public=settings.default_public,
         oidc_discovery_url=settings.oidc_discovery_internal_url,
         allowed_jwt_audiences=settings.allowed_jwt_audiences,
+        authenticate_options=settings.enable_options_allow,
     )
 
     if settings.root_path or settings.upstream_url.path != "/":
@@ -203,6 +215,12 @@ def configure_app(
         # Starlette handles this correctly for preflight requests, its
         # simple-response path does not — using a regex avoids the issue.
         origins = list(settings.cors.allow_origins)
+        expose_headers = list(settings.cors.expose_headers)
+        if settings.enable_options_allow and "allow" not in {
+            header.lower() for header in expose_headers
+        }:
+            # Let browser clients read the Allow header of OPTIONS responses
+            expose_headers.append("Allow")
         origin_regex = None
         if settings.cors.allow_credentials and origins == ["*"]:
             origins = []
@@ -225,7 +243,7 @@ def configure_app(
             allow_methods=list(settings.cors.allow_methods),
             allow_headers=list(settings.cors.allow_headers),
             allow_credentials=settings.cors.allow_credentials,
-            expose_headers=list(settings.cors.expose_headers),
+            expose_headers=expose_headers,
             max_age=settings.cors.max_age,
         )
     else:

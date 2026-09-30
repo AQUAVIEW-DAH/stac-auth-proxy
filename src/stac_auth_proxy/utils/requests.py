@@ -276,3 +276,12 @@ def get_base_url(request: Request) -> str:
         path = request.base_url.path
 
     return f"{scheme}://{netloc}{path}"
+
+
+def is_cors_preflight(request: Request) -> bool:
+    """Check if a request is a CORS preflight request, https://fetch.spec.whatwg.org/#cors-preflight-request."""
+    return (
+        request.method == "OPTIONS"
+        and "origin" in request.headers
+        and "access-control-request-method" in request.headers
+    )

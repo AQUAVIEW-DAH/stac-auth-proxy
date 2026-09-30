@@ -77,13 +77,19 @@ Aside from the actual communication with the upstream STAC API, the majority of 
     - Retrieves [CQL2 expression](http://developmentseed.org/cql2-rs/latest/python/#cql2.Expr) from request state
     - Validates response against CQL2 filter for non-filterable endpoints
 
-12. **[`OpenApiMiddleware`][stac_auth_proxy.middleware.OpenApiMiddleware]**
+12. **[`OptionsAllowMiddleware`][stac_auth_proxy.middleware.OptionsAllowMiddleware]**
+
+    - **Enabled if:** [`ENABLE_OPTIONS_ALLOW`](../../user-guide/configuration#enable_options_allow) is enabled
+    - Answers non-preflight `OPTIONS` requests with an `Allow` header listing the methods the caller may use
+    - Uses the token payload from `EnforceAuthMiddleware` and the per-method CQL2 filters from `Cql2BuildFilterMiddleware`
+
+13. **[`OpenApiMiddleware`][stac_auth_proxy.middleware.OpenApiMiddleware]**
 
     - **Enabled if:** [`OPENAPI_SPEC_ENDPOINT`](../../user-guide/configuration#openapi_spec_endpoint) is set
     - Modifies OpenAPI specification based on endpoint configuration, adding security requirements
     - Configurable via [`OPENAPI_AUTH_SCHEME_NAME`](../../user-guide/configuration#openapi_auth_scheme_name) and [`OPENAPI_AUTH_SCHEME_OVERRIDE`](../../user-guide/configuration#openapi_auth_scheme_override)
 
-13. **[`AuthenticationExtensionMiddleware`][stac_auth_proxy.middleware.AuthenticationExtensionMiddleware]**
+14. **[`AuthenticationExtensionMiddleware`][stac_auth_proxy.middleware.AuthenticationExtensionMiddleware]**
     - **Enabled if:** [`ENABLE_AUTHENTICATION_EXTENSION`](../../user-guide/configuration#enable_authentication_extension) is enabled
     - Adds authentication extension information to STAC responses
     - Annotates links with authentication requirements based on [`PUBLIC_ENDPOINTS`](../../user-guide/configuration#public_endpoints) and [`PRIVATE_ENDPOINTS`](../../user-guide/configuration#private_endpoints)

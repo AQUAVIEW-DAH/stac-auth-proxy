@@ -11,11 +11,17 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.testclient import TestClient
 
 from stac_auth_proxy.handlers import ReverseProxyHandler
+from stac_auth_proxy.middleware import (
+    Cql2ValidateResponseBodyMiddleware,
+    RemoveRootPathMiddleware,
+    RestoreRootPathMiddleware,
+)
 from stac_auth_proxy.middleware.Cql2ValidateTransactionMiddleware import (
     Cql2ValidateTransactionMiddleware,
     UpstreamError,
     _deep_merge,
 )
+from stac_auth_proxy.utils.requests import checked_path
 
 ITEM_FILTER = {"op": "=", "args": [{"property": "collection"}, "allowed"]}
 COLLECTION_FILTER = {"op": "=", "args": [{"property": "id"}, "my-collection"]}
@@ -76,6 +82,19 @@ def app_with_middleware():
 
         @app.delete("/collections/{collection_id}")
         async def delete_collection(request: Request):
+            return {"deleted": True}
+
+        @app.post("/catalogs")
+        @app.put("/catalogs/{catalog_id}")
+        @app.post("/catalogs/{catalog_id}/{children}")
+        @app.put("/catalogs/{catalog_id}/collections/{collection_id}")
+        async def catalog_write(request: Request):
+            body = await request.body()
+            return json.loads(body) if body else {}
+
+        @app.delete("/catalogs/{catalog_id}")
+        @app.delete("/catalogs/{catalog_id}/{children}/{child_id}")
+        async def catalog_delete(request: Request):
             return {"deleted": True}
 
         @app.get("/search")
@@ -504,6 +523,458 @@ class TestDelete:
         assert response.status_code == expected_status
         if error_code:
             assert response.json()["code"] == error_code
+
+
+class TestCatalogs:
+    """Test Multi-Tenant Catalogs transaction validation."""
+
+    OWNER_FILTER = {"op": "=", "args": [{"property": "owner"}, "me"]}
+    RECORDS = {
+        "/catalogs/mine": {"id": "mine", "type": "Catalog", "owner": "me"},
+        "/catalogs/theirs": {"id": "theirs", "type": "Catalog", "owner": "them"},
+        "/catalogs/my-sub": {"id": "my-sub", "type": "Catalog", "owner": "me"},
+        "/catalogs/their-sub": {"id": "their-sub", "type": "Catalog", "owner": "them"},
+        "/collections/my-col": {"id": "my-col", "type": "Collection", "owner": "me"},
+        "/collections/their-col": {
+            "id": "their-col",
+            "type": "Collection",
+            "owner": "them",
+        },
+        "/catalogs/mine/collections/my-col": {
+            "id": "my-col",
+            "type": "Collection",
+            "owner": "me",
+        },
+        "/catalogs/mine/collections/their-col": {
+            "id": "their-col",
+            "type": "Collection",
+            "owner": "them",
+        },
+    }
+
+    def _request(self, app_with_middleware, method, path, **kwargs):
+        """Send a request with the owner filter; return the response and fetched paths."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, Expr(self.OWNER_FILTER))
+        client = TestClient(app)
+        fetched = []
+
+        async def fetch(scope, path=None):
+            fetched.append(path or scope["path"])
+            return self.RECORDS.get(fetched[-1])
+
+        with patch.object(
+            Cql2ValidateTransactionMiddleware, "_fetch_existing", side_effect=fetch
+        ):
+            response = client.request(method, path, **kwargs)
+        return response, fetched
+
+    @pytest.mark.parametrize(
+        "method,path,body,expected_status,error_code",
+        [
+            pytest.param(
+                "POST",
+                "/catalogs",
+                {"id": "new", "type": "Catalog", "owner": "me"},
+                200,
+                None,
+                id="create-allowed",
+            ),
+            pytest.param(
+                "POST",
+                "/catalogs",
+                {"id": "new", "type": "Catalog", "owner": "them"},
+                403,
+                "ForbiddenError",
+                id="create-denied",
+            ),
+            pytest.param(
+                "PUT",
+                "/catalogs/mine",
+                {"id": "mine", "type": "Catalog", "owner": "me", "title": "New"},
+                200,
+                None,
+                id="update-allowed",
+            ),
+            pytest.param(
+                "PUT",
+                "/catalogs/theirs",
+                {"id": "theirs", "type": "Catalog", "owner": "me"},
+                404,
+                "NotFoundError",
+                id="update-existing-denied",
+            ),
+            pytest.param(
+                "PUT",
+                "/catalogs/mine",
+                {"id": "mine", "type": "Catalog", "owner": "them"},
+                403,
+                "ForbiddenError",
+                id="update-result-denied",
+            ),
+            pytest.param(
+                "DELETE", "/catalogs/mine", None, 200, None, id="delete-allowed"
+            ),
+            pytest.param(
+                "DELETE",
+                "/catalogs/theirs",
+                None,
+                404,
+                "NotFoundError",
+                id="delete-denied",
+            ),
+            pytest.param(
+                "PUT",
+                "/catalogs/mine/collections/my-col",
+                {"id": "my-col", "type": "Collection", "owner": "me"},
+                200,
+                None,
+                id="scoped-collection-update-allowed",
+            ),
+            pytest.param(
+                "PUT",
+                "/catalogs/mine/collections/their-col",
+                {"id": "their-col", "type": "Collection", "owner": "me"},
+                404,
+                "NotFoundError",
+                id="scoped-collection-update-denied",
+            ),
+        ],
+    )
+    def test_catalog_records(
+        self, app_with_middleware, method, path, body, expected_status, error_code
+    ):
+        """Catalogs are created, updated, and deleted like collections."""
+        response, _ = self._request(app_with_middleware, method, path, json=body)
+        assert response.status_code == expected_status
+        if error_code:
+            assert response.json()["code"] == error_code
+
+    @pytest.mark.parametrize(
+        "path,body,expected_status,error_code,fetched",
+        [
+            pytest.param(
+                "/catalogs/mine/collections",
+                {"id": "new-col", "type": "Collection", "owner": "me"},
+                200,
+                None,
+                ["/catalogs/mine", "/collections/new-col"],
+                id="create-collection",
+            ),
+            pytest.param(
+                "/catalogs/mine/collections",
+                {"id": "new-col", "type": "Collection", "owner": "them"},
+                403,
+                "ForbiddenError",
+                ["/catalogs/mine", "/collections/new-col"],
+                id="create-collection-denied",
+            ),
+            pytest.param(
+                "/catalogs/theirs/collections",
+                {"id": "new-col", "type": "Collection", "owner": "me"},
+                404,
+                "NotFoundError",
+                ["/catalogs/theirs"],
+                id="create-collection-in-denied-catalog",
+            ),
+            pytest.param(
+                "/catalogs/missing/collections",
+                {"id": "new-col", "type": "Collection", "owner": "me"},
+                404,
+                "NotFoundError",
+                ["/catalogs/missing"],
+                id="create-collection-in-missing-catalog",
+            ),
+            pytest.param(
+                "/catalogs/mine/collections",
+                {"id": "my-col"},
+                200,
+                None,
+                ["/catalogs/mine", "/collections/my-col"],
+                id="link-collection",
+            ),
+            pytest.param(
+                "/catalogs/mine/collections",
+                {"id": "their-col"},
+                403,
+                "ForbiddenError",
+                ["/catalogs/mine", "/collections/their-col"],
+                id="link-collection-denied",
+            ),
+            pytest.param(
+                "/catalogs/mine/collections",
+                {"id": "their-col", "owner": "me"},
+                403,
+                "ForbiddenError",
+                ["/catalogs/mine", "/collections/their-col"],
+                id="link-collection-denied-whatever-the-body-says",
+            ),
+            pytest.param(
+                "/catalogs/theirs/collections",
+                {"id": "my-col"},
+                404,
+                "NotFoundError",
+                ["/catalogs/theirs"],
+                id="link-collection-into-denied-catalog",
+            ),
+            pytest.param(
+                "/catalogs/mine/catalogs",
+                {"id": "new-sub", "type": "Catalog", "owner": "me"},
+                200,
+                None,
+                ["/catalogs/mine", "/catalogs/new-sub"],
+                id="create-sub-catalog",
+            ),
+            pytest.param(
+                "/catalogs/mine/catalogs",
+                {"id": "my-sub"},
+                200,
+                None,
+                ["/catalogs/mine", "/catalogs/my-sub"],
+                id="link-sub-catalog",
+            ),
+            pytest.param(
+                "/catalogs/mine/collections",
+                {"id": "a b?c", "owner": "them"},
+                403,
+                "ForbiddenError",
+                ["/catalogs/mine", "/collections/a b?c"],
+                id="child-id-is-one-segment",
+            ),
+        ],
+    )
+    def test_add_child(
+        self,
+        app_with_middleware,
+        path,
+        body,
+        expected_status,
+        error_code,
+        fetched,
+    ):
+        """Adding a child checks the catalog, and the linked record or the new body."""
+        response, paths = self._request(app_with_middleware, "POST", path, json=body)
+        assert response.status_code == expected_status
+        if error_code:
+            assert response.json()["code"] == error_code
+        assert paths == fetched
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({"type": "Collection", "owner": "me"}, id="no-id"),
+            pytest.param({"id": 1, "owner": "me"}, id="id-not-a-string"),
+            pytest.param({"id": "a/b", "owner": "me"}, id="id-with-slash"),
+            pytest.param([{"id": "my-col"}], id="not-an-object"),
+        ],
+    )
+    def test_add_child_needs_an_id(self, app_with_middleware, body):
+        """A child that cannot be looked up by its id is refused."""
+        response, paths = self._request(
+            app_with_middleware, "POST", "/catalogs/mine/collections", json=body
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "ParseError"
+        assert paths == []
+
+    def test_add_child_invalid_json(self, app_with_middleware):
+        """Invalid JSON returns 400."""
+        response, paths = self._request(
+            app_with_middleware,
+            "POST",
+            "/catalogs/mine/collections",
+            content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "ParseError"
+        assert paths == []
+
+    @pytest.mark.parametrize(
+        "path,expected_status,fetched",
+        [
+            pytest.param(
+                "/catalogs/mine/collections/my-col",
+                200,
+                ["/collections/my-col", "/catalogs/mine"],
+                id="unlink-collection",
+            ),
+            pytest.param(
+                "/catalogs/mine/collections/their-col",
+                404,
+                ["/collections/their-col"],
+                id="unlink-denied-collection",
+            ),
+            pytest.param(
+                "/catalogs/theirs/collections/my-col",
+                404,
+                ["/collections/my-col", "/catalogs/theirs"],
+                id="unlink-from-denied-catalog",
+            ),
+            pytest.param(
+                "/catalogs/mine/catalogs/my-sub",
+                200,
+                ["/catalogs/my-sub", "/catalogs/mine"],
+                id="unlink-sub-catalog",
+            ),
+            pytest.param(
+                "/catalogs/mine/catalogs/their-sub",
+                404,
+                ["/catalogs/their-sub"],
+                id="unlink-denied-sub-catalog",
+            ),
+        ],
+    )
+    def test_remove_child(self, app_with_middleware, path, expected_status, fetched):
+        """Unlinking checks the child, then the catalog."""
+        response, paths = self._request(app_with_middleware, "DELETE", path)
+        assert response.status_code == expected_status
+        if expected_status == 404:
+            assert response.json()["code"] == "NotFoundError"
+        assert paths == fetched
+
+    @pytest.mark.parametrize(
+        "method,path,kwargs",
+        [
+            pytest.param(
+                "POST",
+                "/catalogs/mine/collections",
+                {"json": {"id": "my-col"}},
+                id="add-child",
+            ),
+            pytest.param(
+                "DELETE", "/catalogs/mine/collections/my-col", {}, id="remove-child"
+            ),
+        ],
+    )
+    def test_upstream_unreachable(self, app_with_middleware, method, path, kwargs):
+        """Returns 502 when a record cannot be fetched."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, Expr(self.OWNER_FILTER))
+        client = TestClient(app)
+        with patch.object(
+            Cql2ValidateTransactionMiddleware,
+            "_fetch_existing",
+            new_callable=AsyncMock,
+            side_effect=UpstreamError("Connection refused"),
+        ):
+            response = client.request(method, path, **kwargs)
+        assert response.status_code == 502
+        assert response.json()["code"] == "UpstreamError"
+
+    def test_upstream_unreachable_for_the_child(self, app_with_middleware):
+        """Returns 502 when the record to link cannot be fetched."""
+
+        def fetch(scope, path=None):
+            if path == "/catalogs/mine":
+                return self.RECORDS[path]
+            raise UpstreamError("Connection refused")
+
+        app = app_with_middleware()
+        _set_cql2_filter(app, Expr(self.OWNER_FILTER))
+        client = TestClient(app)
+        with patch.object(
+            Cql2ValidateTransactionMiddleware,
+            "_fetch_existing",
+            new_callable=AsyncMock,
+            side_effect=fetch,
+        ):
+            response = client.post("/catalogs/mine/collections", json={"id": "my-col"})
+        assert response.status_code == 502
+        assert response.json()["code"] == "UpstreamError"
+
+    def _in_process_app(self, root_path=""):
+        """Build an app whose GET routes serve RECORDS, as the full stack orders it."""
+        fetched = []
+        app = FastAPI()
+        app.add_middleware(RestoreRootPathMiddleware)
+        app.add_middleware(Cql2ValidateResponseBodyMiddleware)
+        app.add_middleware(Cql2ValidateTransactionMiddleware)
+        _set_cql2_filter(app, Expr(self.OWNER_FILTER))
+        app.add_middleware(RemoveRootPathMiddleware, root_path=root_path)
+
+        @app.get("/catalogs/{catalog_id}")
+        @app.get("/collections/{collection_id}")
+        async def get_record(request: Request):
+            path = checked_path(request.scope)
+            fetched.append(path)
+            if path not in self.RECORDS:
+                return JSONResponse({"code": "NotFoundError"}, status_code=404)
+            return self.RECORDS[path]
+
+        @app.post("/catalogs/{catalog_id}/{children}")
+        async def add_child():
+            return {"added": True}
+
+        return TestClient(app), fetched
+
+    def test_a_hidden_child_is_not_taken_for_a_new_one(self):
+        """
+        The record to link is fetched without the caller's filter, so one the filter
+        hides is checked as it is stored, not mistaken for a create.
+        """
+        client, fetched = self._in_process_app()
+        response = client.post(
+            "/catalogs/mine/collections",
+            json={"id": "their-col", "type": "Collection", "owner": "me"},
+        )
+        assert response.status_code == 403
+        assert response.json()["code"] == "ForbiddenError"
+        assert fetched == ["/catalogs/mine", "/collections/their-col"]
+
+    def test_other_records_are_fetched_below_the_root_path(self):
+        """The catalog and the child are fetched, not the request's own path."""
+        client, fetched = self._in_process_app(root_path="/stac")
+        response = client.post(
+            "/stac/catalogs/mine/collections",
+            json={"id": "my-col", "type": "Collection", "owner": "me"},
+        )
+        assert response.status_code == 200
+        assert fetched == ["/catalogs/mine", "/collections/my-col"]
+
+    def test_other_records_are_forwarded_by_their_path(self):
+        """Through the reverse proxy, each fetch reaches the upstream at its own path."""
+        upstream_requests = []
+
+        def upstream(request: httpx.Request):
+            upstream_requests.append((request.method, request.url.path))
+            if request.method == "GET":
+                return httpx.Response(200, json=self.RECORDS[request.url.path])
+            return httpx.Response(200, json={"ok": True})
+
+        proxy = ReverseProxyHandler(
+            upstream="http://upstream",
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(upstream), base_url="http://upstream"
+            ),
+        )
+        app = FastAPI()
+        app.add_middleware(RestoreRootPathMiddleware)
+        app.add_middleware(Cql2ValidateTransactionMiddleware)
+        _set_cql2_filter(app, Expr(self.OWNER_FILTER))
+        app.add_middleware(RemoveRootPathMiddleware, root_path="/stac")
+        app.add_api_route(
+            "/{path:path}", proxy.proxy_request, methods=["GET", "POST", "DELETE"]
+        )
+        client = TestClient(app)
+
+        response = client.post(
+            "/stac/catalogs/mine/collections",
+            json={"id": "my-col", "type": "Collection", "owner": "me"},
+        )
+        assert response.status_code == 200
+        assert upstream_requests == [
+            ("GET", "/catalogs/mine"),
+            ("GET", "/collections/my-col"),
+            ("POST", "/catalogs/mine/collections"),
+        ]
+
+    def test_no_filter(self, app_with_middleware):
+        """Catalog writes pass through when no CQL2 filter is set."""
+        app = app_with_middleware()
+        client = TestClient(app)
+        response = client.post("/catalogs/theirs/collections", json={"id": "their-col"})
+        assert response.status_code == 200
 
 
 class TestPassthrough:

@@ -9,6 +9,7 @@ from .Cql2RewriteLinksFilterMiddleware import Cql2RewriteLinksFilterMiddleware
 from .Cql2ValidateResponseBodyMiddleware import Cql2ValidateResponseBodyMiddleware
 from .Cql2ValidateTransactionMiddleware import Cql2ValidateTransactionMiddleware
 from .EnforceAuthMiddleware import EnforceAuthMiddleware
+from .OptionsAllowMiddleware import OptionsAllowMiddleware
 from .ProcessLinksMiddleware import ProcessLinksMiddleware
 from .RejectAmbiguousPathMiddleware import RejectAmbiguousPathMiddleware
 from .RemoveRootPathMiddleware import (
@@ -28,6 +29,7 @@ __all__ = [
     "Cql2ValidateTransactionMiddleware",
     "EnforceAuthMiddleware",
     "OpenApiMiddleware",
+    "OptionsAllowMiddleware",
     "ProcessLinksMiddleware",
     "RejectAmbiguousPathMiddleware",
     "RemoveRootPathMiddleware",

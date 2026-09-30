@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-from cql2 import Expr, Validator
+from cql2 import Expr, ValidationError, Validator
 from fastapi import HTTPException
 from starlette.datastructures import QueryParams
 from starlette.requests import Request
@@ -17,6 +17,9 @@ from ..utils.middleware import bad_request, required_conformance
 from ..utils.requests import match_path
 
 logger = logging.getLogger(__name__)
+
+# Methods whose filters are built for a non-preflight OPTIONS request
+OPTIONS_FILTER_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
 
 @required_conformance(
@@ -32,6 +35,11 @@ class Cql2BuildFilterMiddleware:
 
     state_key: str = "cql2_filter"
     read_state_key: str = "cql2_read_filter"
+
+    # On a non-preflight OPTIONS request, build the filter for each method and place
+    # them in request state (used by OptionsAllowMiddleware)
+    options_filters: bool = False
+    options_state_key: str = "cql2_filters"
 
     # Filters
     collections_filter: Optional[Callable] = None
@@ -78,7 +86,10 @@ class Cql2BuildFilterMiddleware:
 
         request = Request(scope)
 
-        if request.method.upper() == "OPTIONS":
+        is_options = request.method.upper() == "OPTIONS"
+        if is_options and (
+            not self.options_filters or requests.is_cors_preflight(request)
+        ):
             logger.debug("Skipping CQL2 filter build for OPTIONS request")
             return await self.app(scope, receive, send)
 
@@ -95,6 +106,13 @@ class Cql2BuildFilterMiddleware:
             filters.check_unique_params(k for k, _ in query_params.multi_items())
         except filters.InvalidFilterRequestError as e:
             return await bad_request(str(e))(scope, receive, send)
+
+        if is_options:
+            options_filters = await self._build_options_filters(
+                filter_builder, request, scope, query_params
+            )
+            setattr(request.state, self.options_state_key, options_filters)
+            return await self.app(scope, receive, send)
 
         try:
             filter_expr = await filter_builder(
@@ -150,6 +168,29 @@ class Cql2BuildFilterMiddleware:
             },
             **scope["state"],
         }
+
+    async def _build_options_filters(
+        self,
+        filter_builder: Callable[..., Awaitable[str | dict[str, Any]]],
+        request: Request,
+        scope: Scope,
+        query_params: QueryParams,
+    ) -> dict[str, Expr]:
+        """Build the filter the caller would get for each method on the same path."""
+        options_filters = {}
+        for method in OPTIONS_FILTER_METHODS:
+            try:
+                cql2_filter = Expr(
+                    await filter_builder(
+                        self._context(request, scope, method, query_params)
+                    )
+                )
+                self._validator.validate(cql2_filter)
+            except (HTTPException, ValidationError) as e:
+                logger.debug("No %s filter for %s: %s", method, request.url.path, e)
+                continue
+            options_filters[method] = cql2_filter
+        return options_filters
 
     def _get_filter(
         self, path: str

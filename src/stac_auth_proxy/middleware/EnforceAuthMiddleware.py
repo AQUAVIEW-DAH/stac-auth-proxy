@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..config import EndpointMethods
-from ..utils.requests import find_match
+from ..utils.requests import MatchResult, find_match, is_cors_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,9 @@ class EnforceAuthMiddleware:
     oidc_discovery_url: HttpUrl
     allowed_jwt_audiences: Optional[Sequence[str]] = None
     state_key: str = "payload"
+    # Validate the token, if one is sent, on non-preflight OPTIONS requests (used by
+    # OptionsAllowMiddleware)
+    authenticate_options: bool = False
 
     _oidc_config: Optional[OidcService] = None
 
@@ -86,17 +89,20 @@ class EnforceAuthMiddleware:
 
         request = Request(scope)
 
-        # Skip authentication for OPTIONS requests, https://fetch.spec.whatwg.org/#cors-protocol-and-credentials
         if request.method == "OPTIONS":
-            return await self.app(scope, receive, send)
-
-        match = find_match(
-            request.url.path,
-            request.method,
-            private_endpoints=self.private_endpoints,
-            public_endpoints=self.public_endpoints,
-            default_public=self.default_public,
-        )
+            # Skip authentication for OPTIONS requests, https://fetch.spec.whatwg.org/#cors-protocol-and-credentials
+            if not self.authenticate_options or is_cors_preflight(request):
+                return await self.app(scope, receive, send)
+            # The token is optional: the response lists what the caller may do
+            match = MatchResult(uses_auth=False)
+        else:
+            match = find_match(
+                request.url.path,
+                request.method,
+                private_endpoints=self.private_endpoints,
+                public_endpoints=self.public_endpoints,
+                default_public=self.default_public,
+            )
         try:
             payload = self.validate_token(
                 request.headers.get("Authorization"),

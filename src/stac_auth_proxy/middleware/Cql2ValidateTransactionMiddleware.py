@@ -391,7 +391,7 @@ class Cql2ValidateTransactionMiddleware:
         await self.app(scope, receive, send)
 
     async def _check_existing(
-        self, cql2_filter: Expr, path: str
+        self, scope: Scope, cql2_filter: Expr, path: str
     ) -> Optional[JSONResponse]:
         """Check that an existing record matches the filter; return the refusal if not."""
         try:
@@ -405,11 +405,13 @@ class Cql2ValidateTransactionMiddleware:
                 status_code=502,
             )
 
-        if existing is None or not cql2_filter.matches(existing):
+        if existing is None:
             return JSONResponse(
                 {"code": "NotFoundError", "description": "Record not found."},
                 status_code=404,
             )
+        if not cql2_filter.matches(existing):
+            return self._denied_existing(scope, existing)
         return None
 
     async def _handle_add_child(
@@ -454,7 +456,7 @@ class Cql2ValidateTransactionMiddleware:
             )
             return await response(scope, receive, send)
 
-        denied = await self._check_existing(cql2_filter, catalog_path)
+        denied = await self._check_existing(scope, cql2_filter, catalog_path)
         if denied:
             return await denied(scope, receive, send)
 
@@ -503,8 +505,8 @@ class Cql2ValidateTransactionMiddleware:
         The child, which the path names, is checked first, so a refusal answers for it.
         """
         denied = await self._check_existing(
-            cql2_filter, child_path
-        ) or await self._check_existing(cql2_filter, catalog_path)
+            scope, cql2_filter, child_path
+        ) or await self._check_existing(scope, cql2_filter, catalog_path)
         if denied:
             return await denied(scope, receive, send)
 

@@ -2,6 +2,8 @@
 
 import importlib
 import json
+import re
+import string
 from typing import Annotated, Any, Literal, Optional, Sequence, TypeAlias, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -13,6 +15,7 @@ EndpointMethods: TypeAlias = dict[str, Sequence[METHODS]]
 EndpointMethodsWithScope: TypeAlias = dict[
     str, Sequence[Union[METHODS, tuple[METHODS, str]]]
 ]
+SubResourceEndpoints: TypeAlias = dict[str, Sequence[str]]
 
 _PREFIX_PATTERN = r"^/.*$"
 
@@ -132,6 +135,7 @@ class Settings(BaseSettings):
     items_filter_path: str = r"^(/collections/([^/]+)/items(/[^/]+)?$|/search$)"
     collections_filter: Optional[_ClassInput] = None
     collections_filter_path: str = r"^/collections(/[^/]+)?$"
+    sub_resource_endpoints: SubResourceEndpoints = {}
 
     model_config = SettingsConfigDict(
         env_nested_delimiter="_",
@@ -150,6 +154,38 @@ class Settings(BaseSettings):
     def parse_audience(cls, v) -> Sequence[str] | None:
         """Parse a comma separated string list of audiences into a list."""
         return str2list(v)
+
+    @field_validator("sub_resource_endpoints")
+    @classmethod
+    def check_sub_resource_endpoints(
+        cls, v: SubResourceEndpoints
+    ) -> SubResourceEndpoints:
+        """
+        Check that each parent path can be filled from its pattern.
+
+        A parent path is an absolute path whose ``{name}`` fields are named capture
+        groups of the sub-resource pattern it belongs to.
+        """
+        for pattern, parent_paths in v.items():
+            try:
+                groups = set(re.compile(pattern).groupindex)
+            except re.error as e:
+                raise ValueError(f"{pattern!r} is not a valid regular expression: {e}")
+            for parent_path in parent_paths:
+                if not parent_path.startswith("/"):
+                    raise ValueError(f"Parent path {parent_path!r} must start with '/'")
+                fields = {
+                    name
+                    for _, name, _, _ in string.Formatter().parse(parent_path)
+                    if name is not None
+                }
+                missing = fields - groups
+                if missing:
+                    raise ValueError(
+                        f"Parent path {parent_path!r} uses {sorted(missing)}, "
+                        f"which {pattern!r} does not capture"
+                    )
+        return v
 
     @field_validator("root_path_skip_prefixes", mode="before")
     @classmethod

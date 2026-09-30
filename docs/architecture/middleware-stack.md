@@ -47,37 +47,43 @@ Aside from the actual communication with the upstream STAC API, the majority of 
     - Builds CQL2 filters based on request context/state
     - Places [CQL2 expression](http://developmentseed.org/cql2-rs/latest/python/#cql2.Expr) in request state
 
-7.  **[`Cql2RewriteLinksFilterMiddleware`][stac_auth_proxy.middleware.Cql2RewriteLinksFilterMiddleware]**
+7.  **[`Cql2ValidateParentRecordsMiddleware`][stac_auth_proxy.middleware.Cql2ValidateParentRecordsMiddleware]**
+
+    - **Enabled if:** [`SUB_RESOURCE_ENDPOINTS`](../../user-guide/configuration#sub_resource_endpoints) is configured, with a filter
+    - Fetches the parent records of a sub-resource from the upstream API
+    - Answers `404` unless each parent matches the filter the caller would get for reading it
+
+8.  **[`Cql2RewriteLinksFilterMiddleware`][stac_auth_proxy.middleware.Cql2RewriteLinksFilterMiddleware]**
 
     - **Enabled if:** [`ITEMS_FILTER_CLS`](../../user-guide/configuration#items_filter_cls) or [`COLLECTIONS_FILTER_CLS`](../../user-guide/configuration#collections_filter_cls) is configured
     - Rewrites filter parameters in response links to remove applied filters
     - Ensures links in responses show the original filter state
 
-8.  **[`Cql2ApplyFilterQueryStringMiddleware`][stac_auth_proxy.middleware.Cql2ApplyFilterQueryStringMiddleware]**
+9.  **[`Cql2ApplyFilterQueryStringMiddleware`][stac_auth_proxy.middleware.Cql2ApplyFilterQueryStringMiddleware]**
 
     - **Enabled if:** [`ITEMS_FILTER_CLS`](../../user-guide/configuration#items_filter_cls) or [`COLLECTIONS_FILTER_CLS`](../../user-guide/configuration#collections_filter_cls) is configured
     - Retrieves [CQL2 expression](http://developmentseed.org/cql2-rs/latest/python/#cql2.Expr) from request state
     - Augments `GET` requests with CQL2 filter by appending to querystring
 
-9.  **[`Cql2ApplyFilterBodyMiddleware`][stac_auth_proxy.middleware.Cql2ApplyFilterBodyMiddleware]**
+10. **[`Cql2ApplyFilterBodyMiddleware`][stac_auth_proxy.middleware.Cql2ApplyFilterBodyMiddleware]**
 
     - **Enabled if:** [`ITEMS_FILTER_CLS`](../../user-guide/configuration#items_filter_cls) or [`COLLECTIONS_FILTER_CLS`](../../user-guide/configuration#collections_filter_cls) is configured
     - Retrieves [CQL2 expression](http://developmentseed.org/cql2-rs/latest/python/#cql2.Expr) from request state
     - Augments `POST`/`PUT`/`PATCH` requests with CQL2 filter by modifying body
 
-10. **[`Cql2ValidateResponseBodyMiddleware`][stac_auth_proxy.middleware.Cql2ValidateResponseBodyMiddleware]**
+11. **[`Cql2ValidateResponseBodyMiddleware`][stac_auth_proxy.middleware.Cql2ValidateResponseBodyMiddleware]**
 
     - **Enabled if:** [`ITEMS_FILTER_CLS`](../../user-guide/configuration#items_filter_cls) or [`COLLECTIONS_FILTER_CLS`](../../user-guide/configuration#collections_filter_cls) is configured
     - Retrieves [CQL2 expression](http://developmentseed.org/cql2-rs/latest/python/#cql2.Expr) from request state
     - Validates response against CQL2 filter for non-filterable endpoints
 
-11. **[`OpenApiMiddleware`][stac_auth_proxy.middleware.OpenApiMiddleware]**
+12. **[`OpenApiMiddleware`][stac_auth_proxy.middleware.OpenApiMiddleware]**
 
     - **Enabled if:** [`OPENAPI_SPEC_ENDPOINT`](../../user-guide/configuration#openapi_spec_endpoint) is set
     - Modifies OpenAPI specification based on endpoint configuration, adding security requirements
     - Configurable via [`OPENAPI_AUTH_SCHEME_NAME`](../../user-guide/configuration#openapi_auth_scheme_name) and [`OPENAPI_AUTH_SCHEME_OVERRIDE`](../../user-guide/configuration#openapi_auth_scheme_override)
 
-12. **[`AuthenticationExtensionMiddleware`][stac_auth_proxy.middleware.AuthenticationExtensionMiddleware]**
+13. **[`AuthenticationExtensionMiddleware`][stac_auth_proxy.middleware.AuthenticationExtensionMiddleware]**
     - **Enabled if:** [`ENABLE_AUTHENTICATION_EXTENSION`](../../user-guide/configuration#enable_authentication_extension) is enabled
     - Adds authentication extension information to STAC responses
     - Annotates links with authentication requirements based on [`PUBLIC_ENDPOINTS`](../../user-guide/configuration#public_endpoints) and [`PRIVATE_ENDPOINTS`](../../user-guide/configuration#private_endpoints)

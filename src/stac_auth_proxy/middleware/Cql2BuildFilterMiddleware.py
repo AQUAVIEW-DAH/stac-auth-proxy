@@ -2,8 +2,8 @@
 
 import logging
 import re
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from cql2 import Expr, ValidationError
 from fastapi import HTTPException
@@ -29,6 +29,7 @@ class Cql2BuildFilterMiddleware:
     app: ASGIApp
 
     state_key: str = "cql2_filter"
+    parents_state_key: str = "cql2_parent_filters"
 
     # Filters
     collections_filter: Optional[Callable] = None
@@ -36,8 +37,23 @@ class Cql2BuildFilterMiddleware:
     items_filter: Optional[Callable] = None
     items_filter_path: str = r"^(/collections/([^/]+)/items(/[^/]+)?$|/search$)"
 
+    # Sub-resource path patterns, each mapped to the paths of its parent records
+    sub_resource_endpoints: dict[str, Sequence[str]] = field(default_factory=dict)
+
     def __post_init__(self):
         """Set required conformances based on the filter functions."""
+        for pattern, parent_paths in self.sub_resource_endpoints.items():
+            for parent_path in parent_paths:
+                example = parent_path.format_map(
+                    {name: "x" for name in re.compile(pattern).groupindex}
+                )
+                if not self._get_filter(example):
+                    logger.warning(
+                        "No filter covers parent path %r of %r; it is not checked.",
+                        parent_path,
+                        pattern,
+                    )
+
         required_conformances = set()
         if self.collections_filter:
             logger.debug("Appending required conformance for collections filter")
@@ -77,6 +93,25 @@ class Cql2BuildFilterMiddleware:
             logger.debug("Skipping CQL2 filter build for OPTIONS request")
             return await self.app(scope, receive, send)
 
+        parent_paths = self._parent_paths(request.url.path)
+        if parent_paths:
+            try:
+                parent_filters = await self._build_parent_filters(
+                    request, scope, parent_paths
+                )
+            except HTTPException as e:
+                response = JSONResponse(
+                    {"detail": e.detail}, status_code=e.status_code, headers=e.headers
+                )
+                return await response(scope, receive, send)
+            except ValidationError:
+                logger.error("Invalid CQL2 filter for a parent of %s", request.url.path)
+                response = JSONResponse(
+                    {"detail": "Invalid CQL2 filter"}, status_code=502
+                )
+                return await response(scope, receive, send)
+            setattr(request.state, self.parents_state_key, parent_filters)
+
         filter_builder = self._get_filter(request.url.path)
         if not filter_builder:
             return await self.app(scope, receive, send)
@@ -109,6 +144,42 @@ class Cql2BuildFilterMiddleware:
         setattr(request.state, self.state_key, cql2_filter)
 
         return await self.app(scope, receive, send)
+
+    def _parent_paths(self, path: str) -> list[str]:
+        """Get the parent record paths of a sub-resource path."""
+        for pattern, parent_paths in self.sub_resource_endpoints.items():
+            match = re.match(pattern, path)
+            if match:
+                groups = match.groupdict()
+                return [parent_path.format_map(groups) for parent_path in parent_paths]
+        return []
+
+    async def _build_parent_filters(
+        self, request: Request, scope: Scope, parent_paths: list[str]
+    ) -> list[tuple[str, Expr]]:
+        """Build the filter the caller would get for reading each parent record."""
+        parent_filters = []
+        for parent_path in parent_paths:
+            filter_builder = self._get_filter(parent_path)
+            if not filter_builder:
+                continue
+            parent_filter = Expr(
+                await filter_builder(
+                    {
+                        "req": {
+                            "path": parent_path,
+                            "method": "GET",
+                            "query_params": {},
+                            "path_params": requests.extract_variables(parent_path),
+                            "headers": dict(request.headers),
+                        },
+                        **scope["state"],
+                    }
+                )
+            )
+            parent_filter.validate()
+            parent_filters.append((parent_path, parent_filter))
+        return parent_filters
 
     def _get_filter(
         self, path: str

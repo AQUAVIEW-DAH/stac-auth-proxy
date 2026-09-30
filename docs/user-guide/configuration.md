@@ -360,3 +360,11 @@ These settings configure the CORS behavior when `PROXY_OPTIONS` is `false` (the 
     - **Type:** Regex string
     - **Required:** No, defaults to `^/collections(/[^/]+)?$`
     - **Example:** `^.*?/collections(/[^/]+)?$`
+
+### `SUB_RESOURCE_ENDPOINTS`
+
+: Regex patterns of sub-resource paths, each mapped to the paths of the records it belongs to (its parents). Before a request to a sub-resource is served, each parent is fetched from the upstream API and checked against the filter that covers the parent's path. If a parent is missing, does not match, or cannot be evaluated, the proxy answers `404`, so a sub-resource such as `/collections/{collection_id}/queryables` answers only to callers who may read its collection. Parent paths name the pattern's named capture groups in braces. A parent path that no filter covers is not checked.
+
+    - **Type:** JSON object mapping a regex string to a list of path templates
+    - **Required:** No, defaults to `{}` (no checks)
+    - **Example:** `{"^/collections/(?P<collection_id>[^/]+)/(queryables|aggregate|aggregations)$": ["/collections/{collection_id}"]}`

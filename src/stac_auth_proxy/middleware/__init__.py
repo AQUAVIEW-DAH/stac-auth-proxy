@@ -6,6 +6,7 @@ from .Cql2ApplyFilterBodyMiddleware import Cql2ApplyFilterBodyMiddleware
 from .Cql2ApplyFilterQueryStringMiddleware import Cql2ApplyFilterQueryStringMiddleware
 from .Cql2BuildFilterMiddleware import Cql2BuildFilterMiddleware
 from .Cql2RewriteLinksFilterMiddleware import Cql2RewriteLinksFilterMiddleware
+from .Cql2ValidateParentRecordsMiddleware import Cql2ValidateParentRecordsMiddleware
 from .Cql2ValidateResponseBodyMiddleware import Cql2ValidateResponseBodyMiddleware
 from .Cql2ValidateTransactionMiddleware import Cql2ValidateTransactionMiddleware
 from .EnforceAuthMiddleware import EnforceAuthMiddleware
@@ -20,6 +21,7 @@ __all__ = [
     "Cql2ApplyFilterQueryStringMiddleware",
     "Cql2BuildFilterMiddleware",
     "Cql2RewriteLinksFilterMiddleware",
+    "Cql2ValidateParentRecordsMiddleware",
     "Cql2ValidateResponseBodyMiddleware",
     "Cql2ValidateTransactionMiddleware",
     "EnforceAuthMiddleware",

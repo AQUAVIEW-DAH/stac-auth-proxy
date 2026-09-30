@@ -49,6 +49,10 @@ The [`ITEMS_FILTER_CLS`](configuration.md#items_filter_cls) applies filters to t
 - `PATCH /collections/{collection_id}/items/{item_id}` - Fetch existing item, validate both existing and merged result against CQL2 query
 - `DELETE /collections/{collection_id}/items/{item_id}` - Fetch existing item, validate against CQL2 query
 
+### Sub-Resources
+
+Some endpoints belong to a record without returning it, such as `/collections/{collection_id}/queryables` or `/collections/{collection_id}/aggregate`. Their responses are not records, so they cannot be checked against a filter the way a record is. With [`SUB_RESOURCE_ENDPOINTS`](configuration.md#sub_resource_endpoints), each such path is mapped to the paths of its parent records. The proxy builds the filter the caller would get for a `GET` of each parent, fetches the parent from the upstream API, and answers `404` unless every parent matches.
+
 ## Filter Contract
 
 A filter factory implements the following contract:

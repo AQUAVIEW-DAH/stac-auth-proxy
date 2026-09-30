@@ -25,6 +25,7 @@ from .middleware import (
     Cql2ApplyFilterQueryStringMiddleware,
     Cql2BuildFilterMiddleware,
     Cql2RewriteLinksFilterMiddleware,
+    Cql2ValidateParentRecordsMiddleware,
     Cql2ValidateResponseBodyMiddleware,
     Cql2ValidateTransactionMiddleware,
     EnforceAuthMiddleware,
@@ -147,6 +148,11 @@ def configure_app(
         app.add_middleware(Cql2ApplyFilterBodyMiddleware)
         app.add_middleware(Cql2ApplyFilterQueryStringMiddleware)
         app.add_middleware(Cql2RewriteLinksFilterMiddleware)
+        if settings.sub_resource_endpoints:
+            app.add_middleware(
+                Cql2ValidateParentRecordsMiddleware,
+                upstream_url=str(settings.upstream_url),
+            )
         app.add_middleware(
             Cql2BuildFilterMiddleware,
             items_filter=settings.items_filter() if settings.items_filter else None,
@@ -155,6 +161,7 @@ def configure_app(
             ),
             collections_filter_path=settings.collections_filter_path,
             items_filter_path=settings.items_filter_path,
+            sub_resource_endpoints=settings.sub_resource_endpoints,
         )
 
     app.add_middleware(

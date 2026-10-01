@@ -65,13 +65,16 @@ class Cql2ValidateTransactionMiddleware:
         method = request.method
 
         # Match items endpoints: /collections/{id}/items, /collections/{id}/bulk_items, /collections/{id}/items/{id}
-        if re.match(self.items_pattern, path):
+        match = re.match(self.items_pattern, path)
+        if match:
             if method == "POST":
                 if "/bulk_items" in path:
                     return await self._handle_bulk_create(
                         scope, receive, send, cql2_filter
                     )
-                return await self._handle_create(scope, receive, send, cql2_filter)
+                return await self._handle_create(
+                    scope, receive, send, cql2_filter, collection_id=match.group(1)
+                )
             if method in ("PUT", "PATCH"):
                 return await self._handle_update(
                     scope, receive, send, cql2_filter, path, method
@@ -134,8 +137,15 @@ class Cql2ValidateTransactionMiddleware:
         receive: Receive,
         send: Send,
         cql2_filter: Expr,
+        collection_id: Optional[str] = None,
     ) -> None:
-        """Validate create requests."""
+        """
+        Validate create requests.
+
+        On an items endpoint (``collection_id`` given), the body may be an Item or an
+        ItemCollection (STAC API Transaction extension). Each item of an
+        ItemCollection must match the filter.
+        """
         body = await self._read_body(receive)
 
         try:
@@ -150,7 +160,42 @@ class Cql2ValidateTransactionMiddleware:
             )
             return await response(scope, receive, send)
 
-        if not cql2_filter.matches(body_json):
+        if (
+            collection_id is not None
+            and isinstance(body_json, dict)
+            and body_json.get("type") == "FeatureCollection"
+        ):
+            features = body_json.get("features")
+            if not isinstance(features, list) or not all(
+                isinstance(feature, dict) for feature in features
+            ):
+                response = JSONResponse(
+                    {
+                        "code": "ParseError",
+                        "description": "ItemCollection body must contain a 'features' array of objects.",
+                    },
+                    status_code=400,
+                )
+                return await response(scope, receive, send)
+
+            # The server populates each item's collection from the path, so each item
+            # is checked as it will be stored.
+            failed = [
+                str(feature.get("id", index))
+                for index, feature in enumerate(features)
+                if not cql2_filter.matches({**feature, "collection": collection_id})
+            ]
+            if failed:
+                response = JSONResponse(
+                    {
+                        "code": "ForbiddenError",
+                        "description": f"Items do not match access filter: {', '.join(failed)}",
+                    },
+                    status_code=403,
+                )
+                return await response(scope, receive, send)
+
+        elif not cql2_filter.matches(body_json):
             response = JSONResponse(
                 {
                     "code": "ForbiddenError",

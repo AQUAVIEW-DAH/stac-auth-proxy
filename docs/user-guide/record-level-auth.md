@@ -43,7 +43,7 @@ The [`ITEMS_FILTER_CLS`](configuration.md#items_filter_cls) applies filters to t
 - `POST /search` - Append body with generated CQL2 query
 - `GET /collections/{collection_id}/items` - Append query params with generated CQL2 query
 - `GET /collections/{collection_id}/items/{item_id}` - Validate response against CQL2 query
-- `POST /collections/{collection_id}/items` - Validate request body against CQL2 query
+- `POST /collections/{collection_id}/items` - Validate request body against CQL2 query; for an ItemCollection, validate each item, with its `collection` taken from the path
 - `POST /collections/{collection_id}/bulk_items` - Validate items in body with generated CQL2 query
 - `PUT /collections/{collection_id}/items/{item_id}` - Fetch existing item, validate both existing and new body against CQL2 query
 - `PATCH /collections/{collection_id}/items/{item_id}` - Fetch existing item, validate both existing and merged result against CQL2 query

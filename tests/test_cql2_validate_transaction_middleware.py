@@ -326,6 +326,106 @@ class TestBulkCreate:
         assert response.json()["code"] == "ParseError"
 
 
+class TestItemCollectionCreate:
+    """Test validation of an ItemCollection posted to the items endpoint."""
+
+    @staticmethod
+    def _item_collection(*features):
+        return {"type": "FeatureCollection", "features": list(features)}
+
+    def test_all_items_allowed(self, app_with_middleware, cql2_filter):
+        """All items match filter, request passes through."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, cql2_filter)
+        client = TestClient(app)
+        body = self._item_collection(
+            {"type": "Feature", "id": "item1", "collection": "allowed"},
+            {"type": "Feature", "id": "item2", "collection": "allowed"},
+        )
+        response = client.post("/collections/allowed/items", json=body)
+        assert response.status_code == 200
+        assert response.json() == body
+
+    def test_some_items_denied(self, app_with_middleware):
+        """Some items fail filter, returns 403 with failed item IDs."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, Expr({"op": "=", "args": [{"property": "id"}, "item1"]}))
+        client = TestClient(app)
+        response = client.post(
+            "/collections/allowed/items",
+            json=self._item_collection(
+                {"type": "Feature", "id": "item1"},
+                {"type": "Feature", "id": "item2"},
+            ),
+        )
+        assert response.status_code == 403
+        body = response.json()
+        assert body["code"] == "ForbiddenError"
+        assert "item2" in body["description"]
+        assert "item1" not in body["description"]
+
+    @pytest.mark.parametrize(
+        "path,collection,expected_status",
+        [
+            pytest.param("/collections/allowed/items", None, 200, id="no-collection"),
+            pytest.param(
+                "/collections/denied/items", "allowed", 403, id="other-collection"
+            ),
+        ],
+    )
+    def test_items_are_checked_in_the_collection_of_the_path(
+        self, app_with_middleware, cql2_filter, path, collection, expected_status
+    ):
+        """The server populates each item's collection from the path, so the check does too."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, cql2_filter)
+        client = TestClient(app)
+        feature = {"type": "Feature", "id": "item1"}
+        if collection:
+            feature["collection"] = collection
+        response = client.post(path, json=self._item_collection(feature))
+        assert response.status_code == expected_status
+
+    def test_no_filter(self, app_with_middleware):
+        """Request passes through when no CQL2 filter is set."""
+        app = app_with_middleware()
+        client = TestClient(app)
+        response = client.post(
+            "/collections/test/items",
+            json=self._item_collection({"type": "Feature", "id": "item1"}),
+        )
+        assert response.status_code == 200
+
+    def test_empty_features(self, app_with_middleware, cql2_filter):
+        """An ItemCollection without features passes through."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, cql2_filter)
+        client = TestClient(app)
+        response = client.post(
+            "/collections/allowed/items", json=self._item_collection()
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.parametrize(
+        "features",
+        [
+            pytest.param({"item1": {"id": "item1"}}, id="features-not-array"),
+            pytest.param(["item1"], id="feature-not-object"),
+        ],
+    )
+    def test_malformed_features(self, app_with_middleware, cql2_filter, features):
+        """Features that are not an array of objects return 400."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, cql2_filter)
+        client = TestClient(app)
+        response = client.post(
+            "/collections/allowed/items",
+            json={"type": "FeatureCollection", "features": features},
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "ParseError"
+
+
 class TestUpdate:
     """Test item and collection update validation."""
 

@@ -25,6 +25,7 @@ class OidcService:
     oidc_discovery_url: HttpUrl
     jwks_client: jwt.PyJWKClient = field(init=False)
     metadata: dict[str, Any] = field(init=False)
+    issuer: str = field(init=False)
 
     def __post_init__(self) -> None:
         """Initialize OIDC config and JWKS client."""
@@ -36,6 +37,16 @@ class OidcService:
             response.raise_for_status()
             self.metadata = response.json()
             assert self.metadata, "OIDC metadata is empty"
+
+            # A token's iss must be the issuer the metadata names (RFC 8725, section 3.8;
+            # RFC 9068, section 4). The metadata may be read over an internal URL, so the
+            # issuer comes from the document, never from the URL it was read from.
+            issuer = self.metadata.get("issuer")
+            if not isinstance(issuer, str) or not issuer:
+                raise OidcFetchError(
+                    f"OIDC metadata from {origin_url} names no issuer, so no token can be checked"
+                )
+            self.issuer = issuer
 
             # NOTE: We manually replace the origin of the jwks_uri in the event that
             # the jwks_uri is not available from within the proxy.
@@ -155,6 +166,8 @@ class EnforceAuthMiddleware:
                 algorithms=["RS256"],
                 # NOTE: Audience validation MUST match audience claim if set in token (https://pyjwt.readthedocs.io/en/stable/changelog.html?highlight=audience#id40)
                 audience=self.allowed_jwt_audiences,
+                # A missing or different iss is refused (RFC 8725, section 3.8)
+                issuer=self.oidc_config.issuer,
             )
         except jwt.InvalidAudienceError as e:
             logger.error("Token audience validation failed: %s", str(e))
@@ -169,9 +182,14 @@ class EnforceAuthMiddleware:
             jwt.exceptions.PyJWKClientError,
         ) as e:
             logger.error("Token validation failed: %s", type(e).__name__)
+            issuer_failed = isinstance(e, jwt.InvalidIssuerError) or (
+                isinstance(e, jwt.MissingRequiredClaimError) and e.claim == "iss"
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token",
+                detail="Invalid token issuer"
+                if issuer_failed
+                else "Invalid or expired token",
                 headers={"WWW-Authenticate": "Bearer"},
             ) from e
 

@@ -18,6 +18,8 @@ Record-level authorization is implemented through **data filtering**—a strateg
 
 For **read** operations on list endpoints, the CQL2 filter is appended to the outgoing request so filtering happens at the database level. For single-resource read endpoints, the filter validates the upstream response before the user receives it. For **write** operations (create, update, delete), the filter validates the request body and/or existing record to ensure the user is authorized to modify the resource.
 
+The existing record a write check fetches is kept in request state, in `request.state.upstream_records` (a dict by path, with `None` for a record upstream does not have). A middleware placed after the check can use it without another upstream request, and one placed before it can supply the record, which the check then uses instead of fetching it.
+
 > [!NOTE]
 >
 > For more information on _how_ data filtering works, some more information can be found in the [architecture section](../architecture/filtering-data.md) of the docs.

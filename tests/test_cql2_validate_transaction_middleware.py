@@ -543,10 +543,10 @@ class TestCatalogs:
             Cql2ValidateTransactionMiddleware,
             "_fetch_existing",
             new_callable=AsyncMock,
-            side_effect=self.RECORDS.get,
+            side_effect=lambda scope, path: self.RECORDS.get(path),
         ) as fetch:
             response = client.request(method, path, **kwargs)
-        return response, [call.args[0] for call in fetch.await_args_list]
+        return response, [call.args[1] for call in fetch.await_args_list]
 
     @pytest.mark.parametrize(
         "method,path,body,expected_status,error_code",
@@ -844,7 +844,7 @@ class TestCatalogs:
     def test_upstream_unreachable_for_the_child(self, app_with_middleware):
         """Returns 502 when the record to link cannot be fetched."""
 
-        def fetch(path):
+        def fetch(scope, path):
             if path == "/catalogs/mine":
                 return self.RECORDS[path]
             raise httpx.ConnectError("Connection refused")
@@ -1050,3 +1050,65 @@ class TestReadableButNotWritable:
             )
         assert response.status_code == 404
         assert response.json()["code"] == "NotFoundError"
+
+
+class TestRecordsInRequestState:
+    """Test that a fetched record is kept in request state and used once per request."""
+
+    PATH = "/collections/allowed/items/item1"
+    RECORD = {"id": "item1", "collection": "allowed"}
+
+    @staticmethod
+    def _app(supplied=None):
+        """Build an app whose PUT route returns the records kept in request state."""
+        app = FastAPI()
+        app.add_middleware(
+            Cql2ValidateTransactionMiddleware, upstream_url="http://upstream:8080"
+        )
+
+        @app.put("/collections/{collection_id}/items/{item_id}")
+        async def update_item(request: Request):
+            return request.state.upstream_records
+
+        @app.middleware("http")
+        async def set_state(request, call_next):
+            request.state.cql2_filter = Expr(ITEM_FILTER)
+            if supplied is not None:
+                request.state.upstream_records = supplied
+            return await call_next(request)
+
+        return app
+
+    def _upstream(self, status_code=200, record=None):
+        request = httpx.Request("GET", f"http://upstream:8080{self.PATH}")
+        return patch.object(
+            httpx.AsyncClient,
+            "get",
+            new_callable=AsyncMock,
+            return_value=httpx.Response(status_code, json=record, request=request),
+        )
+
+    def test_fetched_record_is_kept(self):
+        """The record fetched for the check is kept in request state, by path."""
+        with self._upstream(record=self.RECORD) as get:
+            response = TestClient(self._app()).put(self.PATH, json=self.RECORD)
+        assert response.status_code == 200
+        assert response.json() == {self.PATH: self.RECORD}
+        assert get.await_count == 1
+
+    @pytest.mark.parametrize(
+        "supplied,expected_status",
+        [
+            pytest.param({"id": "item1", "collection": "allowed"}, 200, id="allowed"),
+            pytest.param({"id": "item1", "collection": "denied"}, 404, id="denied"),
+            pytest.param(None, 404, id="missing"),
+        ],
+    )
+    def test_record_in_state_is_used(self, supplied, expected_status):
+        """A record already in request state is checked without fetching it again."""
+        with self._upstream(record={"id": "item1", "collection": "other"}) as get:
+            response = TestClient(self._app({self.PATH: supplied})).put(
+                self.PATH, json=self.RECORD
+            )
+        assert response.status_code == expected_status
+        assert get.await_count == 0

@@ -42,6 +42,7 @@ class Cql2ValidateTransactionMiddleware:
     upstream_url: str
     state_key: str = "cql2_filter"
     read_state_key: str = "cql2_read_filter"
+    records_state_key: str = "upstream_records"
 
     _client: httpx.AsyncClient = field(init=False)
 
@@ -159,13 +160,24 @@ class Cql2ValidateTransactionMiddleware:
 
         return new_receive
 
-    async def _fetch_existing(self, path: str) -> Optional[dict]:
-        """Fetch the existing record from upstream."""
-        response = await self._client.get(path)
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.json()
+    async def _fetch_existing(self, scope: Scope, path: str) -> Optional[dict]:
+        """
+        Fetch the existing record from upstream, once per request.
+
+        Records are kept in request state under ``records_state_key``, a dict by path,
+        with ``None`` for a record upstream does not have. A record already there is
+        used instead of fetching it, so a middleware before this one can supply it,
+        and one after it can use it without another upstream request.
+        """
+        records = scope.setdefault("state", {}).setdefault(self.records_state_key, {})
+        if path not in records:
+            response = await self._client.get(path)
+            if response.status_code == 404:
+                records[path] = None
+            else:
+                response.raise_for_status()
+                records[path] = response.json()
+        return records[path]
 
     def _denied_existing(self, scope: Scope, existing: dict) -> JSONResponse:
         """
@@ -312,7 +324,7 @@ class Cql2ValidateTransactionMiddleware:
 
         # Fetch existing record
         try:
-            existing = await self._fetch_existing(path)
+            existing = await self._fetch_existing(scope, path)
         except httpx.HTTPError:
             response = JSONResponse(
                 {
@@ -366,7 +378,7 @@ class Cql2ValidateTransactionMiddleware:
     ) -> None:
         """Validate delete requests."""
         try:
-            existing = await self._fetch_existing(path)
+            existing = await self._fetch_existing(scope, path)
         except httpx.HTTPError:
             response = JSONResponse(
                 {
@@ -395,7 +407,7 @@ class Cql2ValidateTransactionMiddleware:
     ) -> Optional[JSONResponse]:
         """Check that an existing record matches the filter; return the refusal if not."""
         try:
-            existing = await self._fetch_existing(path)
+            existing = await self._fetch_existing(scope, path)
         except httpx.HTTPError:
             return JSONResponse(
                 {
@@ -462,7 +474,7 @@ class Cql2ValidateTransactionMiddleware:
 
         try:
             existing = await self._fetch_existing(
-                f"/{children}/{quote(child_id, safe='')}"
+                scope, f"/{children}/{quote(child_id, safe='')}"
             )
         except httpx.HTTPError:
             response = JSONResponse(

@@ -141,6 +141,9 @@ The application is configurable via environment variables.
     - **Required:** No, defaults to the value of `OIDC_DISCOVERY_URL`
     - **Example:** `http://auth/.well-known/openid-configuration`
 
+    > [!NOTE]
+    > Every JWT's `iss` (issuer) claim must equal the `issuer` named in this discovery document, as RFC 8725 (section 3.8) and RFC 9068 (section 4) require; a token with a missing or different `iss` is refused with `401`. The issuer comes from the document, not from the URL it is read from, so the document may be read over an internal URL while it names the public issuer that tokens carry. A discovery document that names no `issuer` is refused.
+
 ### `ALLOWED_JWT_AUDIENCES`
 
 : Unique identifier(s) of API resource server(s)

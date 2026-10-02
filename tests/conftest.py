@@ -14,6 +14,9 @@ from jwcrypto import jwk, jwt
 from starlette_cramjam.middleware import CompressionMiddleware
 from utils import single_chunk_async_stream_response
 
+# The issuer the mock OIDC discovery document names, and so the `iss` of the tokens it signs.
+MOCK_ISSUER = "https://example.com"
+
 
 @pytest.fixture
 def test_key() -> jwk.JWK:
@@ -33,6 +36,7 @@ def public_key(test_key: jwk.JWK) -> dict[str, Any]:
 def mock_jwks(public_key: dict[str, Any]):
     """Mock JWKS endpoint."""
     mock_oidc_config = {
+        "issuer": MOCK_ISSUER,
         "jwks_uri": "https://example.com/jwks",
         "authorization_endpoint": "https://example.com/auth",
         "token_endpoint": "https://example.com/token",
@@ -58,10 +62,14 @@ def mock_jwks(public_key: dict[str, Any]):
 def token_builder(test_key: jwk.JWK):
     """Generate a valid JWT token builder."""
 
-    def build_token(payload: dict[str, Any], key=None) -> str:
+    def build_token(
+        payload: dict[str, Any], key=None, issuer: str | None = MOCK_ISSUER
+    ) -> str:
+        """Sign ``payload``, with the mock issuer as `iss` unless it names one or ``issuer`` is None."""
+        claims = {"iss": issuer, **payload} if issuer is not None else payload
         jwt_token = jwt.JWT(
             header={k: test_key.get(k) for k in ["alg", "kid"]},
-            claims=payload,
+            claims=claims,
         )
         jwt_token.make_signed_token(key or test_key)
         return jwt_token.serialize()

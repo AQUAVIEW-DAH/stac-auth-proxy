@@ -885,6 +885,38 @@ class TestCatalogs:
         assert response.status_code == 502
         assert response.json()["code"] == "UpstreamError"
 
+    @pytest.mark.parametrize(
+        "method,path,kwargs",
+        [
+            pytest.param(
+                "POST",
+                "/catalogs/theirs/collections",
+                {"json": {"id": "my-col", "type": "Collection", "owner": "me"}},
+                id="add-to-their-catalog",
+            ),
+            pytest.param(
+                "DELETE", "/catalogs/mine/collections/their-col", {}, id="unlink-theirs"
+            ),
+        ],
+    )
+    def test_a_readable_record_is_refused_with_403(
+        self, app_with_middleware, method, path, kwargs
+    ):
+        """A catalog or child the caller may read but not change gets 403, like P2."""
+        app = app_with_middleware()
+        _set_cql2_filter(app, Expr(self.OWNER_FILTER), Expr(True))
+        client = TestClient(app)
+
+        async def fetch(scope, path=None):
+            return self.RECORDS.get(path or scope["path"])
+
+        with patch.object(
+            Cql2ValidateTransactionMiddleware, "_fetch_existing", side_effect=fetch
+        ):
+            response = client.request(method, path, **kwargs)
+        assert response.status_code == 403
+        assert response.json()["code"] == "ForbiddenError"
+
     def _in_process_app(self, root_path=""):
         """Build an app whose GET routes serve RECORDS, as the full stack orders it."""
         fetched = []

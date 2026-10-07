@@ -459,11 +459,13 @@ class Cql2ValidateTransactionMiddleware:
                 status_code=502,
             )
 
-        if existing is None or not cql2_filter.matches(existing):
+        if existing is None:
             return JSONResponse(
                 {"code": "NotFoundError", "description": "Record not found."},
                 status_code=404,
             )
+        if not cql2_filter.matches(existing):
+            return self._denied_existing(scope, existing)
         return None
 
     async def _handle_add_child(

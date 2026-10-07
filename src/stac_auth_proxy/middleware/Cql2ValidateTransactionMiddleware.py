@@ -45,6 +45,7 @@ class Cql2ValidateTransactionMiddleware:
     app: ASGIApp
     state_key: str = "cql2_filter"
     read_state_key: str = "cql2_read_filter"
+    records_state_key: str = "upstream_records"
 
     # Transaction endpoint patterns
     items_pattern = r"^/collections/([^/]+)/(items|bulk_items)(?:/([^/]+))?$"
@@ -157,7 +158,7 @@ class Cql2ValidateTransactionMiddleware:
     ) -> Optional[dict]:
         """
         Fetch the existing record by sending a GET for the same path to the
-        downstream app, in-process.
+        downstream app, in-process, once per request.
 
         When deployed as a proxy, this reaches the upstream via the reverse proxy
         handler; when deployed as middleware, it reaches the STAC API's routes
@@ -172,7 +173,16 @@ class Cql2ValidateTransactionMiddleware:
         child is added to. That GET goes without the caller's filter: the checks
         here compare the record with the filter themselves, and must tell a record
         that does not exist from one the filter would hide.
+
+        Records are kept in request state under ``records_state_key``, a dict by path,
+        with ``None`` for a record the GET did not find. A record already there is
+        used instead of fetching it, so a middleware before this one can supply it,
+        and one after it can use it without another request.
         """
+        records = scope.setdefault("state", {}).setdefault(self.records_state_key, {})
+        key = path or Request(scope).url.path
+        if key in records:
+            return records[key]
         state = dict(scope.get("state", {}))
         read_filter = state.get(self.read_state_key)
         if read_filter is not None:
@@ -215,13 +225,15 @@ class Cql2ValidateTransactionMiddleware:
             raise UpstreamError("Failed to fetch existing record") from e
 
         if status == 404:
+            records[key] = None
             return None
         if status != 200:
             raise UpstreamError(f"Unexpected status {status} fetching existing record")
         try:
-            return json.loads(body)
+            records[key] = json.loads(body)
         except json.JSONDecodeError as e:
             raise UpstreamError("Existing record is not valid JSON") from e
+        return records[key]
 
     def _denied_existing(self, scope: Scope, existing: dict) -> JSONResponse:
         """

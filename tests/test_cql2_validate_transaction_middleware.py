@@ -1398,3 +1398,57 @@ class TestReadableButNotWritable:
             **({} if method == "delete" else {"json": {"properties": {}}}),
         )
         assert response.status_code == expected_status
+
+
+class TestRecordsInRequestState:
+    """Test that a fetched record is kept in request state and used once per request."""
+
+    PATH = "/collections/allowed/items/item1"
+    RECORD = {"id": "item1", "collection": "allowed"}
+
+    def _create(self, supplied=None):
+        """Build an app whose PUT route returns the records kept in request state."""
+        gets = []
+        app = FastAPI()
+        app.add_middleware(Cql2ValidateTransactionMiddleware)
+        _set_cql2_filter(app, Expr(ITEM_FILTER))
+
+        @app.middleware("http")
+        async def supply(request, call_next):
+            if supplied is not None:
+                request.state.upstream_records = supplied
+            return await call_next(request)
+
+        @app.get("/collections/{collection_id}/items/{item_id}")
+        async def get_item(request: Request):
+            gets.append(request.url.path)
+            return self.RECORD
+
+        @app.put("/collections/{collection_id}/items/{item_id}")
+        async def update_item(request: Request):
+            return request.state.upstream_records
+
+        return TestClient(app), gets
+
+    def test_fetched_record_is_kept(self):
+        """The record fetched for the check is kept in request state, by path."""
+        client, gets = self._create()
+        response = client.put(self.PATH, json=self.RECORD)
+        assert response.status_code == 200
+        assert response.json() == {self.PATH: self.RECORD}
+        assert gets == [self.PATH]
+
+    @pytest.mark.parametrize(
+        "supplied,expected_status",
+        [
+            pytest.param({"id": "item1", "collection": "allowed"}, 200, id="allowed"),
+            pytest.param({"id": "item1", "collection": "denied"}, 404, id="denied"),
+            pytest.param(None, 404, id="missing"),
+        ],
+    )
+    def test_record_in_state_is_used(self, supplied, expected_status):
+        """A record already in request state is checked without fetching it again."""
+        client, gets = self._create({self.PATH: supplied})
+        response = client.put(self.PATH, json=self.RECORD)
+        assert response.status_code == expected_status
+        assert gets == []

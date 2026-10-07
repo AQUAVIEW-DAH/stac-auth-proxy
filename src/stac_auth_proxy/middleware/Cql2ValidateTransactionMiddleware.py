@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from logging import getLogger
 from typing import Optional
+from urllib.parse import quote
 
 from cql2 import Expr
 from starlette.requests import Request
@@ -11,7 +12,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..utils.middleware import required_conformance
-from ..utils.requests import match_path
+from ..utils.requests import CHECKED_PATH, match_path
+from .RemoveRootPathMiddleware import _ORIGINAL as ROOT_PATH_REMOVED
 
 logger = getLogger(__name__)
 
@@ -47,6 +49,12 @@ class Cql2ValidateTransactionMiddleware:
     # Transaction endpoint patterns
     items_pattern = r"^/collections/([^/]+)/(items|bulk_items)(?:/([^/]+))?$"
     collections_pattern = r"^/collections(?:/([^/]+))?$"
+    # Multi-Tenant Catalogs endpoints, checked when a filter covers them
+    # https://github.com/StacLabs/multi-tenant-catalogs/blob/v1.0.0/README.md#transactions-management
+    catalogs_pattern = r"^/catalogs(?:/([^/]+))?$"
+    catalog_children_pattern = (
+        r"^/catalogs/([^/]+)/(catalogs|collections)(?:/([^/]+))?$"
+    )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Validate transaction requests against the CQL2 filter."""
@@ -77,7 +85,10 @@ class Cql2ValidateTransactionMiddleware:
                 return await self._handle_delete(scope, receive, send, cql2_filter)
 
         # Match collections endpoints: /collections, /collections/{id}
-        if match_path(self.collections_pattern, path):
+        # and catalogs endpoints: /catalogs, /catalogs/{id}
+        if match_path(self.collections_pattern, path) or match_path(
+            self.catalogs_pattern, path
+        ):
             if method == "POST":
                 return await self._handle_create(scope, receive, send, cql2_filter)
             if method in ("PUT", "PATCH"):
@@ -86,6 +97,34 @@ class Cql2ValidateTransactionMiddleware:
                 )
             if method == "DELETE":
                 return await self._handle_delete(scope, receive, send, cql2_filter)
+
+        # Match catalog children endpoints: /catalogs/{id}/catalogs,
+        # /catalogs/{id}/collections, /catalogs/{id}/{catalogs|collections}/{id}
+        if match := match_path(self.catalog_children_pattern, path):
+            catalog_id, children, child_id = match.groups()
+            children = children.lower()
+            catalog_path = f"/catalogs/{catalog_id}"
+            if method == "POST" and child_id is None:
+                return await self._handle_add_child(
+                    scope, receive, send, cql2_filter, catalog_path, children
+                )
+            if (
+                method in ("PUT", "PATCH")
+                and children == "collections"
+                and child_id is not None
+            ):
+                return await self._handle_update(
+                    scope, receive, send, cql2_filter, method
+                )
+            if method == "DELETE" and child_id is not None:
+                return await self._handle_remove_child(
+                    scope,
+                    receive,
+                    send,
+                    cql2_filter,
+                    catalog_path,
+                    f"/{children}/{child_id}",
+                )
 
         # Not a transaction endpoint, pass through
         return await self.app(scope, receive, send)
@@ -113,7 +152,9 @@ class Cql2ValidateTransactionMiddleware:
 
         return new_receive
 
-    async def _fetch_existing(self, scope: Scope) -> Optional[dict]:
+    async def _fetch_existing(
+        self, scope: Scope, path: Optional[str] = None
+    ) -> Optional[dict]:
         """
         Fetch the existing record by sending a GET for the same path to the
         downstream app, in-process.
@@ -126,6 +167,11 @@ class Cql2ValidateTransactionMiddleware:
         The GET carries the caller's read filter, when there is one, in place of the
         write filter, so a downstream response check returns a record the caller may
         read and the write check can refuse it with 403 rather than 404.
+
+        ``path`` names another record than the request's, such as the catalog a
+        child is added to. That GET goes without the caller's filter: the checks
+        here compare the record with the filter themselves, and must tell a record
+        that does not exist from one the filter would hide.
         """
         state = dict(scope.get("state", {}))
         read_filter = state.get(self.read_state_key)
@@ -143,6 +189,13 @@ class Cql2ValidateTransactionMiddleware:
             # request.
             "state": state,
         }
+        if path is not None:
+            sub_scope.update(
+                {"path": path, "raw_path": quote(path).encode(), CHECKED_PATH: path}
+            )
+            # Routed as the path the checks see, not under the request's root path
+            sub_scope.pop(ROOT_PATH_REMOVED, None)
+            sub_scope["state"].pop(self.state_key, None)
         status = None
         body = b""
 
@@ -388,5 +441,123 @@ class Cql2ValidateTransactionMiddleware:
         if not cql2_filter.matches(existing):
             response = self._denied_existing(scope, existing)
             return await response(scope, receive, send)
+
+        await self.app(scope, receive, send)
+
+    async def _check_existing(
+        self, scope: Scope, cql2_filter: Expr, path: str
+    ) -> Optional[JSONResponse]:
+        """Check that an existing record matches the filter; return the refusal if not."""
+        try:
+            existing = await self._fetch_existing(scope, path)
+        except UpstreamError:
+            return JSONResponse(
+                {
+                    "code": "UpstreamError",
+                    "description": "Failed to fetch record from upstream.",
+                },
+                status_code=502,
+            )
+
+        if existing is None or not cql2_filter.matches(existing):
+            return JSONResponse(
+                {"code": "NotFoundError", "description": "Record not found."},
+                status_code=404,
+            )
+        return None
+
+    async def _handle_add_child(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        cql2_filter: Expr,
+        catalog_path: str,
+        children: str,
+    ) -> None:
+        """
+        Validate adding a catalog or collection to a catalog.
+
+        The body either creates a new record or links an existing one by its id.
+        The catalog must match the filter. Linking changes the linked record, so an
+        existing record with the body's id must match the filter; otherwise the body
+        must match, as for any create.
+        """
+        body = await self._read_body(receive)
+
+        try:
+            body_json = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            response = JSONResponse(
+                {
+                    "code": "ParseError",
+                    "description": "Request body must be valid JSON.",
+                },
+                status_code=400,
+            )
+            return await response(scope, receive, send)
+
+        child_id = body_json.get("id") if isinstance(body_json, dict) else None
+        if not isinstance(child_id, str) or not child_id or "/" in child_id:
+            response = JSONResponse(
+                {
+                    "code": "ParseError",
+                    "description": "Request body must have a string id without '/'.",
+                },
+                status_code=400,
+            )
+            return await response(scope, receive, send)
+
+        denied = await self._check_existing(scope, cql2_filter, catalog_path)
+        if denied:
+            return await denied(scope, receive, send)
+
+        try:
+            existing = await self._fetch_existing(scope, f"/{children}/{child_id}")
+        except UpstreamError:
+            response = JSONResponse(
+                {
+                    "code": "UpstreamError",
+                    "description": "Failed to fetch record from upstream.",
+                },
+                status_code=502,
+            )
+            return await response(scope, receive, send)
+
+        # A linked record the caller cannot change gets the same answer as a new
+        # record the caller cannot create, so the answer does not tell them apart.
+        if not cql2_filter.matches(existing if existing is not None else body_json):
+            response = JSONResponse(
+                {
+                    "code": "ForbiddenError",
+                    "description": "Resource does not match access filter.",
+                },
+                status_code=403,
+            )
+            return await response(scope, receive, send)
+
+        # Reconstruct receive and forward
+        scope = dict(scope)
+        await self.app(scope, self._make_receive(body), send)
+
+    async def _handle_remove_child(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        cql2_filter: Expr,
+        catalog_path: str,
+        child_path: str,
+    ) -> None:
+        """
+        Validate unlinking a child, which changes both the catalog and the child.
+
+        The child, which the path names, is checked first, so a refusal answers for it.
+        """
+        denied = await self._check_existing(
+            scope, cql2_filter, child_path
+        ) or await self._check_existing(scope, cql2_filter, catalog_path)
+        if denied:
+            return await denied(scope, receive, send)
 
         await self.app(scope, receive, send)

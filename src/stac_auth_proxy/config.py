@@ -134,6 +134,7 @@ class Settings(BaseSettings):
     check_conformance: bool = True
     enable_compression: bool = True
     proxy_options: bool = False
+    enable_options_allow: bool = False
     cors: CorsSettings = Field(default_factory=CorsSettings)
 
     # OpenAPI / Swagger UI

@@ -295,7 +295,6 @@ class TestQueryParamConsistency:
         assert request.url.query == b"a=1&a=2"
 
 
-
 class TestFilterPathParams:
     """Test extraction of path params from the configured filter paths."""
 
@@ -331,13 +330,18 @@ class TestFilterPathParams:
             "collection_id": "my-collection",
         }
 
-    @pytest.mark.parametrize(
-        "path", ["/collections/123/queryables", "/collections/123/bulk_items"]
-    )
-    def test_defaults_route_no_filter_to_queryables_or_bulk_items(self, path):
-        """The defaults leave these paths alone, so no filter and no params."""
+    def test_defaults_route_no_filter_to_queryables(self):
+        """The defaults leave queryables alone, so no filter and no params."""
         mw = build_middleware()
-        assert mw._get_filter(path) == (None, {})
+        assert mw._get_filter("/collections/123/queryables") == (None, {})
+
+    def test_defaults_route_bulk_items_to_the_items_filter(self):
+        """The default items pattern covers bulk_items and names its collection."""
+        mw = build_middleware()
+        assert mw._get_filter("/collections/123/bulk_items") == (
+            mw.items_filter,
+            {"collection_id": "123"},
+        )
 
     @pytest.mark.parametrize(
         "path,expected",

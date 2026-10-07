@@ -151,6 +151,7 @@ def configure_app(
             public_endpoints=settings.public_endpoints,
             private_endpoints=settings.private_endpoints,
             default_public=settings.default_public,
+            single_record_endpoints=settings.single_record_endpoints,
         )
 
     if settings.items_filter or settings.collections_filter:

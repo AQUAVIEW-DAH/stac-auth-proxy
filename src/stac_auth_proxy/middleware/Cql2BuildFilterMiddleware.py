@@ -120,7 +120,7 @@ class Cql2BuildFilterMiddleware:
 
         if is_options:
             options_filters = await self._build_options_filters(
-                filter_builder, request, scope, query_params
+                filter_builder, request, scope, query_params, path_params
             )
             setattr(request.state, self.options_state_key, options_filters)
             return await self.app(scope, receive, send)
@@ -192,6 +192,7 @@ class Cql2BuildFilterMiddleware:
         request: Request,
         scope: Scope,
         query_params: QueryParams,
+        path_params: dict,
     ) -> dict[str, Expr]:
         """Build the filter the caller would get for each method on the same path."""
         options_filters = {}
@@ -199,7 +200,7 @@ class Cql2BuildFilterMiddleware:
             try:
                 cql2_filter = Expr(
                     await filter_builder(
-                        self._context(request, scope, method, query_params)
+                        self._context(request, scope, method, query_params, path_params)
                     )
                 )
                 self._validator.validate(cql2_filter)

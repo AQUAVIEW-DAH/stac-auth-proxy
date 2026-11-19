@@ -21,6 +21,7 @@ from stac_auth_proxy.middleware.Cql2ApplyFilterQueryStringMiddleware import (
 from stac_auth_proxy.middleware.Cql2ValidateResponseBodyMiddleware import (
     Cql2ValidateResponseBodyMiddleware,
 )
+from stac_auth_proxy.middleware.OptionsAllowMiddleware import OptionsAllowMiddleware
 
 TENANT_A = Expr("tenant = 'a'")
 TENANT_B = Expr("tenant = 'b'")
@@ -165,8 +166,10 @@ class TestSettings:
             items_filter={"cls": "stac_auth_proxy.filters:Template", "args": ["true"]},
             single_record_endpoints=[CATALOG],
             search_body_endpoints=[CATALOG_SEARCH],
+            enable_options_allow=True,
         )(upstream_url=source_api_server)
         kwargs = {m.cls: m.kwargs for m in app.user_middleware}
+        assert kwargs[OptionsAllowMiddleware]["single_record_endpoints"] == [CATALOG]
         assert kwargs[Cql2ValidateResponseBodyMiddleware][
             "single_record_endpoints"
         ] == [CATALOG]

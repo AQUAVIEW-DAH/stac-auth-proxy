@@ -35,6 +35,17 @@ The [`COLLECTIONS_FILTER_CLS`](configuration.md#collections_filter_cls) applies 
 - `PATCH /collections/{collection_id}` - Fetch existing collection, validate both existing and merged result against CQL2 query
 - `DELETE /collections/{collection_id}` - Fetch existing collection, validate against CQL2 query
 
+### Multi-Tenant Catalogs
+
+When the filter paths cover the routes of the [Multi-Tenant Catalogs](https://github.com/StacLabs/multi-tenant-catalogs/blob/v1.0.0/README.md) extension, catalog writes are checked against the filter built for the request. Linking a record into a catalog, or unlinking it, changes that record too, so it is checked along with the catalog:
+
+- `POST /catalogs` - Validate request body against CQL2 query
+- `PUT /catalogs/{catalog_id}` - Fetch existing catalog, validate both existing and new body against CQL2 query
+- `DELETE /catalogs/{catalog_id}` - Fetch existing catalog, validate against CQL2 query
+- `POST /catalogs/{catalog_id}/catalogs`, `POST /catalogs/{catalog_id}/collections` - Fetch the catalog and validate it against CQL2 query. Then fetch the record with the body's `id` and validate it (link), or validate the body when no such record exists (create)
+- `PUT /catalogs/{catalog_id}/collections/{collection_id}` - Fetch existing collection, validate both existing and new body against CQL2 query
+- `DELETE /catalogs/{catalog_id}/catalogs/{sub_catalog_id}`, `DELETE /catalogs/{catalog_id}/collections/{collection_id}` - Fetch the child and the catalog, validate both against CQL2 query
+
 ### Item-Level Filtering
 
 The [`ITEMS_FILTER_CLS`](configuration.md#items_filter_cls) applies filters to the following operations:
